@@ -40,7 +40,10 @@ sudo apt-get install -y build-essential cmake git curl \
 
 GPU_CMAKE_FLAGS=""
 
-if lspci | grep -qi "vga.*intel"; then
+_has_intel=$(lspci | grep -i vga | grep -ci intel || true)
+_has_amd=$(lspci | grep -i vga | grep -ci "amd\|ati" || true)
+
+if [ "$_has_intel" -gt 0 ]; then
     echo "==> Intel iGPU detected, setting up GPU acceleration..."
 
     # Try SYCL first (Intel oneAPI)
@@ -74,8 +77,17 @@ if lspci | grep -qi "vga.*intel"; then
             echo "    WARNING: No GPU acceleration available, using CPU."
         fi
     fi
+elif [ "$_has_amd" -gt 0 ]; then
+    echo "==> AMD GPU detected, setting up Vulkan acceleration..."
+    sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools glslc
+    if vulkaninfo --summary &>/dev/null; then
+        echo "    Vulkan available."
+        GPU_CMAKE_FLAGS="-DGGML_VULKAN=ON"
+    else
+        echo "    WARNING: Vulkan not available, using CPU."
+    fi
 else
-    echo "    No Intel iGPU detected, using CPU."
+    echo "    No supported GPU detected, using CPU."
 fi
 
 if [ -n "$GPU_CMAKE_FLAGS" ]; then
@@ -171,25 +183,29 @@ echo "    Service installed. Start with: systemctl --user start whisper-dictatio
 
 # ── GNOME keybinding ───────────────────────────────────────────────────────────
 
-echo "==> Registering ${GNOME_KEYBINDING} keybinding in GNOME..."
 SCHEMA="org.gnome.settings-daemon.plugins.media-keys"
 BINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom-whisper-dictation/"
 
-EXISTING=$(gsettings get "$SCHEMA" custom-keybindings)
-if echo "$EXISTING" | grep -q "custom-whisper-dictation"; then
-    echo "    Keybinding entry already exists, updating..."
+if ! gsettings list-schemas 2>/dev/null | grep -q "^${SCHEMA}$"; then
+    echo "==> Skipping GNOME keybinding (schema not available — not running GNOME?)."
+    echo "    To trigger dictation manually: $BIN_DIR/whisper-dictation-toggle"
 else
-    if [ "$EXISTING" = "@as []" ] || [ "$EXISTING" = "[]" ]; then
-        NEW="['$BINDING_PATH']"
+    echo "==> Registering ${GNOME_KEYBINDING} keybinding in GNOME..."
+    EXISTING=$(gsettings get "$SCHEMA" custom-keybindings)
+    if echo "$EXISTING" | grep -q "custom-whisper-dictation"; then
+        echo "    Keybinding entry already exists, updating..."
     else
-        NEW=$(echo "$EXISTING" | sed "s|]|, '$BINDING_PATH']|")
+        if [ "$EXISTING" = "@as []" ] || [ "$EXISTING" = "[]" ]; then
+            NEW="['$BINDING_PATH']"
+        else
+            NEW=$(echo "$EXISTING" | sed "s|]|, '$BINDING_PATH']|")
+        fi
+        gsettings set "$SCHEMA" custom-keybindings "$NEW"
     fi
-    gsettings set "$SCHEMA" custom-keybindings "$NEW"
+    gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" name "Whisper Dictation Toggle"
+    gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" command "$BIN_DIR/whisper-dictation-toggle"
+    gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" binding "$GNOME_KEYBINDING"
 fi
-
-gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" name "Whisper Dictation Toggle"
-gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" command "$BIN_DIR/whisper-dictation-toggle"
-gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" binding "$GNOME_KEYBINDING"
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 

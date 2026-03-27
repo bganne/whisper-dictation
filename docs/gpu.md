@@ -17,6 +17,8 @@ Best performance on Intel Arc iGPUs (Meteor Lake, Arrow Lake, etc.).
 - Installs `intel-oneapi-dpcpp-cpp-compiler` and `intel-oneapi-mkl-devel`
 - Builds whisper.cpp with `-DGGML_SYCL=ON`
 
+> **AMD GPUs**: SYCL is Intel-only. `install.sh` skips to Vulkan automatically.
+
 **Manual setup** (if auto-detection fails):
 ```bash
 # Add Intel oneAPI repo
@@ -37,10 +39,11 @@ rm -rf ~/.local/share/whisper-dictation/build
 
 ### 2. Vulkan
 
-Cross-vendor fallback. Works on Intel, AMD, and NVIDIA GPUs.
+Cross-vendor GPU support. Works on Intel, AMD, and NVIDIA GPUs.
 
-`install.sh` installs Vulkan deps and builds with `-DGGML_VULKAN=ON` if SYCL
-is not available.
+`install.sh` installs Vulkan deps and builds with `-DGGML_VULKAN=ON`:
+- **AMD**: detected automatically, goes directly to Vulkan (no SYCL step)
+- **Intel**: used as fallback if SYCL is unavailable
 
 **Manual setup**:
 ```bash
@@ -101,7 +104,7 @@ Look for lines indicating the compute device. You can also test directly:
 
 ## Known Limitations
 
-- Only Intel iGPUs are auto-detected by `install.sh`. NVIDIA users should
+- Intel and AMD GPUs are auto-detected by `install.sh`. NVIDIA users should
   build whisper.cpp with `-DGGML_CUDA=ON` manually.
 - SYCL requires the Intel GPU kernel driver (i915 or xe). Verify with
   `ls /dev/dri/render*`.

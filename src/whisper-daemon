@@ -92,11 +92,9 @@ parse_and_type() {
         fi
 
         if $in_block; then
-            # Strip timestamp prefix: [HH:MM:SS.mmm --> HH:MM:SS.mmm]  text
-            if [[ "$line" == "["*" --> "* ]]; then
-                line="${line#*"]"}"
-                line="${line#"${line%%[![:space:]]*}"}"
-            fi
+            # Strip all bracketed tokens: timestamps, [BLANK_AUDIO], (Silence), …
+            # If nothing remains, the line is skipped below.
+            line=$(sed -E 's/\[[^]]*\]|\([^)]*\)//g; s/^[[:space:]]*//' <<< "$line")
             [ -n "$line" ] || continue
             [ -n "$text" ] && text="$text "
             text="${text}${line}"
