@@ -13,27 +13,59 @@ INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/whisper-dictation"
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-SOCKET="/tmp/whisper-dictation-$(id -u).sock"
-STATEFILE="/tmp/whisper-dictation-$(id -u).state"
-LOCKFILE="/tmp/whisper-dictation-$(id -u).lock"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+SOCKET="$RUNTIME_DIR/whisper-dictation-$(id -u).sock"
+STATEFILE="$RUNTIME_DIR/whisper-dictation-$(id -u).state"
+LOCKFILE="$RUNTIME_DIR/whisper-dictation-$(id -u).lock"
+CONFHASH_FILE="$RUNTIME_DIR/whisper-dictation-$(id -u).confhash"
+
+# ── Auto-restart on config change ──────────────────────────────────────────────
+
+if [ -S "$SOCKET" ] && [ -f "$CONFIG_FILE" ]; then
+    CURRENT_HASH=$(md5sum "$CONFIG_FILE" | cut -d' ' -f1)
+    if [ -f "$CONFHASH_FILE" ] && [ "$(cat "$CONFHASH_FILE")" != "$CURRENT_HASH" ]; then
+        echo "Config changed, restarting daemon..."
+        if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
+            systemctl --user restart whisper-dictation.service
+        else
+            pkill -f "whisper-daemon.py" 2>/dev/null || true
+        fi
+        rm -f "$SOCKET" "$STATEFILE"
+        sleep 0.5
+        # Fall through to the daemon-start path below
+    fi
+fi
 
 # ── Toggle logic ───────────────────────────────────────────────────────────────
 
 if [ ! -S "$SOCKET" ]; then
-    # Daemon not running — start it (prevent double spawn with a lock file)
-    [ -f "$LOCKFILE" ] && exit 0
-    touch "$LOCKFILE"
-    "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/whisper-daemon.py" &
+    # Daemon not running — start it (flock prevents double spawn)
+    if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
+        systemctl --user start whisper-dictation.service
+    else
+        (
+            flock -n 9 || exit 0
+            "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/whisper-daemon.py" &
+        ) 9>"$LOCKFILE"
+    fi
     for i in $(seq 30); do
         [ -S "$SOCKET" ] && break
         sleep 1
     done
-    rm -f "$LOCKFILE"
+    # Save config hash for change detection
+    [ -f "$CONFIG_FILE" ] && md5sum "$CONFIG_FILE" | cut -d' ' -f1 > "$CONFHASH_FILE"
     echo "on" > "$STATEFILE"
 elif [ -f "$STATEFILE" ] && [ "$(cat "$STATEFILE")" = "on" ]; then
-    echo "stop" | socat - UNIX-CONNECT:"$SOCKET"
+    if ! echo "stop" | socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null; then
+        # Socket exists but daemon is dead — clean up and re-launch
+        rm -f "$SOCKET" "$STATEFILE"
+        exec "$0"
+    fi
     echo "off" > "$STATEFILE"
 else
-    echo "start" | socat - UNIX-CONNECT:"$SOCKET"
+    if ! echo "start" | socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null; then
+        rm -f "$SOCKET" "$STATEFILE"
+        exec "$0"
+    fi
     echo "on" > "$STATEFILE"
 fi

@@ -7,6 +7,7 @@ INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/whisper-dictation"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictation"
 CONFIG_FILE="$CONFIG_DIR/whisper-dictation.conf"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
 # Source existing config so WHISPER_MODEL and GNOME_KEYBINDING are available
 # for the model-download and keybinding steps below.
@@ -17,10 +18,21 @@ GNOME_KEYBINDING="${GNOME_KEYBINDING:-F12}"
 # ── Stop any running instance ──────────────────────────────────────────────────
 
 echo "==> Stopping any running instance..."
-pkill -f "whisper-daemon.py" 2>/dev/null || true
-rm -f "/tmp/whisper-dictation-$(id -u).sock" \
-      "/tmp/whisper-dictation-$(id -u).state" \
-      "/tmp/whisper-dictation-$(id -u).lock"
+if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
+    systemctl --user stop whisper-dictation.service 2>/dev/null || true
+else
+    pkill -f "whisper-daemon.py" 2>/dev/null || true
+fi
+rm -f "$RUNTIME_DIR/whisper-dictation-$(id -u).sock" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).state" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).lock" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).confhash"
+# Also clean legacy /tmp paths if XDG_RUNTIME_DIR is set
+if [ "$RUNTIME_DIR" != "/tmp" ]; then
+    rm -f "/tmp/whisper-dictation-$(id -u).sock" \
+          "/tmp/whisper-dictation-$(id -u).state" \
+          "/tmp/whisper-dictation-$(id -u).lock"
+fi
 
 # ── System dependencies ────────────────────────────────────────────────────────
 
@@ -50,10 +62,12 @@ fi
 echo "==> Pre-downloading Whisper model (~1.5 GB for medium.en)..."
 HF_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/huggingface/hub"
 if [ ! -d "$HF_CACHE/models--Systran--faster-whisper-${WHISPER_MODEL}" ]; then
-    "$INSTALL_DIR/venv/bin/python3" - <<EOF
+    WHISPER_MODEL="$WHISPER_MODEL" "$INSTALL_DIR/venv/bin/python3" - <<'EOF'
+import os
 from faster_whisper import WhisperModel
-print("Downloading model '${WHISPER_MODEL}'...")
-WhisperModel("${WHISPER_MODEL}", device="cpu", compute_type="int8")
+model_name = os.environ["WHISPER_MODEL"]
+print(f"Downloading model '{model_name}'...")
+WhisperModel(model_name, device="cpu", compute_type="int8")
 print("Done.")
 EOF
 else
@@ -64,7 +78,9 @@ fi
 
 echo "==> Pre-converting model to OpenVINO format (one-time, may take a few minutes)..."
 if [ ! -d "$INSTALL_DIR/ov-model" ]; then
-    "$INSTALL_DIR/venv/bin/python3" - <<EOF
+    WHISPER_MODEL="$WHISPER_MODEL" INSTALL_DIR="$INSTALL_DIR" \
+    "$INSTALL_DIR/venv/bin/python3" - <<'EOF'
+import os
 import openvino as ov
 devices = ov.Core().available_devices
 if "GPU" not in devices:
@@ -72,13 +88,16 @@ if "GPU" not in devices:
 else:
     from optimum.intel import OVModelForSpeechSeq2Seq
     from transformers import AutoProcessor
-    model_id = "openai/whisper-${WHISPER_MODEL}"
+    model_name = os.environ["WHISPER_MODEL"]
+    install_dir = os.environ["INSTALL_DIR"]
+    model_id = f"openai/whisper-{model_name}"
     print(f"Converting {model_id} to OpenVINO IR...")
     model = OVModelForSpeechSeq2Seq.from_pretrained(
         model_id, export=True, device="CPU", load_in_8bit=True
     )
-    model.save_pretrained("$INSTALL_DIR/ov-model")
-    AutoProcessor.from_pretrained(model_id).save_pretrained("$INSTALL_DIR/ov-model")
+    ov_path = os.path.join(install_dir, "ov-model")
+    model.save_pretrained(ov_path)
+    AutoProcessor.from_pretrained(model_id).save_pretrained(ov_path)
     print("Conversion done.")
 EOF
 else
@@ -105,6 +124,32 @@ chmod +x "$INSTALL_DIR/whisper-daemon.py"
 mkdir -p "$BIN_DIR"
 cp "$REPO_DIR/src/whisper-dictation-toggle" "$BIN_DIR/whisper-dictation-toggle"
 chmod +x "$BIN_DIR/whisper-dictation-toggle"
+
+# ── systemd user service ──────────────────────────────────────────────────────
+
+echo "==> Installing systemd user service..."
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_DIR"
+cat > "$SYSTEMD_DIR/whisper-dictation.service" <<UNIT
+[Unit]
+Description=Whisper Dictation Daemon
+After=graphical-session.target pulseaudio.service pipewire-pulse.service
+
+[Service]
+Type=simple
+ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/whisper-daemon.py
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=%t
+
+[Install]
+WantedBy=graphical-session.target
+UNIT
+
+systemctl --user daemon-reload
+systemctl --user enable whisper-dictation.service
+echo "    Service installed. Start with: systemctl --user start whisper-dictation"
 
 # ── GNOME keybinding ───────────────────────────────────────────────────────────
 

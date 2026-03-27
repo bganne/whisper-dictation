@@ -4,6 +4,7 @@ set -euo pipefail
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/whisper-dictation"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictation"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 SCHEMA="org.gnome.settings-daemon.plugins.media-keys"
 BINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom-whisper-dictation/"
 
@@ -15,10 +16,27 @@ fi
 # ── Stop daemon ────────────────────────────────────────────────────────────────
 
 echo "==> Stopping daemon..."
+if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
+    systemctl --user stop whisper-dictation.service 2>/dev/null || true
+    systemctl --user disable whisper-dictation.service 2>/dev/null || true
+fi
 pkill -f "whisper-daemon.py" 2>/dev/null || true
-rm -f "/tmp/whisper-dictation-$(id -u).sock" \
-      "/tmp/whisper-dictation-$(id -u).state" \
-      "/tmp/whisper-dictation-$(id -u).lock"
+rm -f "$RUNTIME_DIR/whisper-dictation-$(id -u).sock" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).state" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).lock" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).confhash"
+# Also clean legacy /tmp paths if XDG_RUNTIME_DIR is set
+if [ "$RUNTIME_DIR" != "/tmp" ]; then
+    rm -f "/tmp/whisper-dictation-$(id -u).sock" \
+          "/tmp/whisper-dictation-$(id -u).state" \
+          "/tmp/whisper-dictation-$(id -u).lock"
+fi
+
+# ── Remove systemd service ────────────────────────────────────────────────────
+
+echo "==> Removing systemd user service..."
+rm -f "$HOME/.config/systemd/user/whisper-dictation.service"
+systemctl --user daemon-reload 2>/dev/null || true
 
 # ── Remove GNOME keybinding ────────────────────────────────────────────────────
 

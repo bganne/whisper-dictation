@@ -13,6 +13,7 @@ first is instant, with no per-use startup cost.
 
 - **OS**: Ubuntu 22.04+ or Debian 12+
 - **Desktop**: GNOME (for keybinding registration)
+- **Display server**: X11 (Wayland is **not** supported — `xdotool` and `osd_cat` require X11)
 - **Audio**: PulseAudio or PipeWire-Pulse
 - **Python**: 3.10+
 - **Intel iGPU**: optional — enables faster transcription (see [docs/openvino.md](docs/openvino.md))
@@ -45,6 +46,7 @@ from `whisper-dictation.conf.example`. Re-running `install.sh` never overwrites 
 | `WHISPER_MODEL` | `medium.en` | Model to use (see [Model Selection](#model-selection)) |
 | `GNOME_KEYBINDING` | `F12` | Key registered in GNOME |
 | `SAMPLE_RATE` | `16000` | Audio sample rate in Hz |
+| `MAX_SPEECH_SECONDS` | `120` | Maximum speech seconds before auto-flush to transcription |
 | `SILENCE_RMS` | `300` | RMS threshold below which audio is silence (0–32767) |
 | `SILENCE_SECONDS` | `1.5` | Seconds of silence before auto-transcription fires |
 | `MIN_SPEECH_SECONDS` | `0.3` | Minimum speech seconds to bother transcribing |
@@ -61,8 +63,8 @@ Environment variables override config file values. Example:
 WHISPER_MODEL=small.en whisper-dictation-toggle
 ```
 
-After changing the config, the new values take effect the next time the daemon
-starts (kill the running daemon first: `pkill -f whisper-daemon.py`).
+After changing the config, the new values take effect the next time you press the
+toggle key — the daemon detects config changes and restarts automatically.
 
 ---
 
@@ -172,6 +174,33 @@ Use `medium` (multilingual) instead of `medium.en`, and either remove the
 - Switch to a smaller model (`small.en` or `base.en`)
 - Check whether OpenVINO conversion ran: `ls ~/.local/share/whisper-dictation/ov-model/`
 - See [docs/openvino.md](docs/openvino.md) for iGPU setup
+
+**Not working under Wayland**
+This project uses `xdotool` and `osd_cat`, which are X11-only. On GNOME, you can
+switch to Xorg at the login screen. Wayland support would require replacing
+`xdotool type` with `wtype` or `ydotool`, and `osd_cat` with a Wayland-native
+notification method.
+
+**Managing the daemon with systemd**
+The install script registers a systemd user service. You can manage it with:
+```bash
+systemctl --user start whisper-dictation    # start the daemon
+systemctl --user stop whisper-dictation     # stop the daemon
+systemctl --user restart whisper-dictation  # restart after config changes
+journalctl --user -u whisper-dictation -f   # view logs
+```
+
+---
+
+## Security Notes
+
+- The Unix socket is created in `$XDG_RUNTIME_DIR` with mode 0600, accessible
+  only to the owning user.
+- `xdotool type` is used with `--clearmodifiers` and `--` to prevent flag
+  injection. Whisper hallucinations could theoretically produce unexpected text
+  (e.g., shell metacharacters typed into a terminal), but this is inherent to
+  any speech-to-type tool. Exercise caution when dictating into a terminal
+  emulator or any context where typed text is interpreted as commands.
 
 ---
 

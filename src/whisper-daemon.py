@@ -34,7 +34,10 @@ def _load_conf():
                 if "=" in line:
                     k, _, v = line.partition("=")
                     v = v.strip()
-                    conf[k.strip()] = shlex.split(v)[0] if v else ""
+                    try:
+                        conf[k.strip()] = shlex.split(v)[0] if v else ""
+                    except ValueError:
+                        conf[k.strip()] = v.strip("\"'")
     except FileNotFoundError:
         pass
     return conf
@@ -53,12 +56,14 @@ def _get(key, default):
 
 # ── Constants (all configurable) ───────────────────────────────────────────────
 
-SOCKET_PATH        = f"/tmp/whisper-dictation-{os.getuid()}.sock"
+_runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+SOCKET_PATH        = os.path.join(_runtime_dir, f"whisper-dictation-{os.getuid()}.sock")
 MODEL_NAME         = _get("WHISPER_MODEL", "medium.en")
 SAMPLE_RATE        = _get("SAMPLE_RATE", 16000)
 SILENCE_RMS        = _get("SILENCE_RMS", 300)
 SILENCE_SECONDS    = _get("SILENCE_SECONDS", 1.5)
 MIN_SPEECH_SECONDS = _get("MIN_SPEECH_SECONDS", 0.3)
+MAX_SPEECH_SECONDS = _get("MAX_SPEECH_SECONDS", 120.0)
 
 OSD_ARGS = [
     f"--pos={_get('OSD_POS', 'bottom')}",
@@ -68,6 +73,8 @@ OSD_ARGS = [
     f"--colour={_get('OSD_COLOR', 'red')}",
     f"--outline={_get('OSD_OUTLINE', 2)}",
 ]
+
+OV_MODEL_DIR = os.path.join(os.path.dirname(__file__), "ov-model")
 
 # ── OSD ────────────────────────────────────────────────────────────────────────
 
@@ -94,31 +101,12 @@ def osd(msg, persistent=False):
             _osd_proc = p
         # never block — fire and forget for non-persistent too
 
-# ── Model loading ──────────────────────────────────────────────────────────────
-
-print(f"Loading model {MODEL_NAME}...", flush=True)
-from faster_whisper import WhisperModel
-OV_MODEL_DIR = os.path.join(os.path.dirname(__file__), "ov-model")
-if os.path.isdir(OV_MODEL_DIR):
-    _device_label = "iGPU"
-    osd(f"loading on {_device_label}...", persistent=True)
-    print("Loading pre-converted OpenVINO model on GPU...", flush=True)
-    from optimum.intel import OVModelForSpeechSeq2Seq
-    from transformers import AutoProcessor
-    _ov_model = OVModelForSpeechSeq2Seq.from_pretrained(OV_MODEL_DIR, device="GPU")
-    _ov_processor = AutoProcessor.from_pretrained(OV_MODEL_DIR)
-    _use_openvino = True
-    model = None
-else:
-    _device_label = "CPU"
-    osd(f"loading on {_device_label}...", persistent=True)
-    print("No OpenVINO model found, using faster-whisper on CPU...", flush=True)
-    _use_openvino = False
-    model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
-print(f"Model loaded on {_device_label}. Ready.", flush=True)
-osd(None)
-
 # ── Recording state ────────────────────────────────────────────────────────────
+
+_use_openvino = False
+_ov_model = None
+_ov_processor = None
+model = None
 
 parec_proc = None
 recording_active = False  # True while recording is on
@@ -144,23 +132,26 @@ def transcribe(data, my_session):
     osd("transcribing...", persistent=True)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         tmpfile = f.name
-    with wave.open(tmpfile, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(data)
-    if _use_openvino:
-        import numpy as np
-        with wave.open(tmpfile, "rb") as wf:
-            raw = wf.readframes(wf.getnframes())
-        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        inputs = _ov_processor(audio, return_tensors="pt", sampling_rate=SAMPLE_RATE)
-        ids = _ov_model.generate(**inputs)
-        text = _ov_processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-    else:
-        segments, _ = model.transcribe(tmpfile, language="en", beam_size=5)
-        text = " ".join(seg.text.strip() for seg in segments).strip()
-    os.unlink(tmpfile)
+    try:
+        with wave.open(tmpfile, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(data)
+        if _use_openvino:
+            import numpy as np
+            with wave.open(tmpfile, "rb") as wf:
+                raw = wf.readframes(wf.getnframes())
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            inputs = _ov_processor(audio, return_tensors="pt", sampling_rate=SAMPLE_RATE)
+            ids = _ov_model.generate(**inputs)
+            text = _ov_processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+        else:
+            segments, _ = model.transcribe(tmpfile, language="en", beam_size=5)
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+    finally:
+        if os.path.exists(tmpfile):
+            os.unlink(tmpfile)
     # Check again — may have been cancelled while transcribing
     with recording_lock:
         if session_id != my_session:
@@ -196,6 +187,17 @@ def start_recording():
         silence_duration = 0.0
         chunk_duration = 4096 / 2 / SAMPLE_RATE
 
+        def _flush_transcription():
+            nonlocal speech_chunks, speech_duration, silence_duration
+            if speech_duration >= MIN_SPEECH_SECONDS:
+                data_to_transcribe = b"".join(speech_chunks)
+                threading.Thread(target=transcribe,
+                                 args=(data_to_transcribe, my_session),
+                                 daemon=True).start()
+            speech_chunks = []
+            speech_duration = 0.0
+            silence_duration = 0.0
+
         while True:
             with recording_lock:
                 if not recording_active or session_id != my_session:
@@ -207,6 +209,10 @@ def start_recording():
                 continue
             data = proc.stdout.read(4096)
             if not data:
+                if proc.poll() is not None:
+                    print(f"parec exited with code {proc.returncode}", file=sys.stderr, flush=True)
+                    osd("parec failed!")
+                    return
                 continue
 
             level = rms(data)
@@ -214,18 +220,13 @@ def start_recording():
                 speech_chunks.append(data)
                 speech_duration += chunk_duration
                 silence_duration = 0.0
+                if speech_duration >= MAX_SPEECH_SECONDS:
+                    _flush_transcription()
             else:
                 speech_chunks.append(data)
                 silence_duration += chunk_duration
                 if silence_duration >= SILENCE_SECONDS:
-                    if speech_duration >= MIN_SPEECH_SECONDS:
-                        data_to_transcribe = b"".join(speech_chunks)
-                        threading.Thread(target=transcribe,
-                                         args=(data_to_transcribe, my_session),
-                                         daemon=True).start()
-                    speech_chunks = []
-                    speech_duration = 0.0
-                    silence_duration = 0.0
+                    _flush_transcription()
 
     threading.Thread(target=_record, daemon=True).start()
 
@@ -241,36 +242,64 @@ def stop_recording():
         parec_proc = None
     osd(None)
 
-# ── Socket server ──────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-if os.path.exists(SOCKET_PATH):
-    os.unlink(SOCKET_PATH)
+def main():
+    global _use_openvino, _ov_model, _ov_processor, model
 
-server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-server.bind(SOCKET_PATH)
-server.listen(1)
+    # ── Model loading ─────────────────────────────────────────────────────────
+    print(f"Loading model {MODEL_NAME}...", flush=True)
+    from faster_whisper import WhisperModel
+    if os.path.isdir(OV_MODEL_DIR) and any(f.endswith(".xml") for f in os.listdir(OV_MODEL_DIR)):
+        _device_label = "iGPU"
+        osd(f"loading on {_device_label}...", persistent=True)
+        print("Loading pre-converted OpenVINO model on GPU...", flush=True)
+        from optimum.intel import OVModelForSpeechSeq2Seq
+        from transformers import AutoProcessor
+        _ov_model = OVModelForSpeechSeq2Seq.from_pretrained(OV_MODEL_DIR, device="GPU")
+        _ov_processor = AutoProcessor.from_pretrained(OV_MODEL_DIR)
+        _use_openvino = True
+    else:
+        _device_label = "CPU"
+        osd(f"loading on {_device_label}...", persistent=True)
+        print("No OpenVINO model found, using faster-whisper on CPU...", flush=True)
+        model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
+    print(f"Model loaded on {_device_label}. Ready.", flush=True)
+    osd(None)
 
-def handle_signals(sig, frame):
-    stop_recording()
-    server.close()
+    # ── Socket server ─────────────────────────────────────────────────────────
     if os.path.exists(SOCKET_PATH):
         os.unlink(SOCKET_PATH)
-    sys.exit(0)
 
-signal.signal(signal.SIGTERM, handle_signals)
-signal.signal(signal.SIGINT, handle_signals)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCKET_PATH)
+    os.chmod(SOCKET_PATH, 0o600)
+    server.listen(1)
 
-# Start recording immediately — daemon is launched on first keypress
-start_recording()
+    def handle_signals(sig, frame):
+        stop_recording()
+        server.close()
+        if os.path.exists(SOCKET_PATH):
+            os.unlink(SOCKET_PATH)
+        sys.exit(0)
 
-while True:
-    try:
-        conn, _ = server.accept()
-        cmd = conn.recv(16).decode().strip()
-        conn.close()
-        if cmd == "start":
-            threading.Thread(target=start_recording, daemon=True).start()
-        elif cmd == "stop":
-            threading.Thread(target=stop_recording, daemon=True).start()
-    except OSError:
-        break
+    signal.signal(signal.SIGTERM, handle_signals)
+    signal.signal(signal.SIGINT, handle_signals)
+
+    # Start recording immediately — daemon is launched on first keypress
+    start_recording()
+
+    while True:
+        try:
+            conn, _ = server.accept()
+            cmd = conn.recv(16).decode().strip()
+            conn.close()
+            if cmd == "start":
+                threading.Thread(target=start_recording, daemon=True).start()
+            elif cmd == "stop":
+                threading.Thread(target=stop_recording, daemon=True).start()
+        except OSError:
+            break
+
+if __name__ == "__main__":
+    main()
