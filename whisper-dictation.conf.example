@@ -1,0 +1,53 @@
+# whisper-dictation configuration
+# Copied to ~/.config/whisper-dictation/whisper-dictation.conf on first install.
+# Re-running install.sh will NOT overwrite this file.
+#
+# Priority for all settings: environment variable > this file > built-in default.
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+
+# Whisper model to use. See README.md for the speed/accuracy trade-off table.
+# Options: tiny.en  base.en  small.en  medium.en  large-v3
+WHISPER_MODEL="medium.en"
+
+# ── Keybinding ────────────────────────────────────────────────────────────────
+
+# Key registered as the GNOME custom keybinding (xkb key name).
+GNOME_KEYBINDING="F12"
+
+# ── Audio / VAD ───────────────────────────────────────────────────────────────
+
+# Audio sample rate in Hz. Both parec and Whisper expect 16000; change only if
+# you know what you are doing.
+SAMPLE_RATE=16000
+
+# RMS amplitude below which audio is considered silence (0–32767 scale).
+# Increase in noisy environments; decrease if the VAD cuts off your speech.
+SILENCE_RMS=300
+
+# Seconds of continuous silence after speech before transcription fires.
+SILENCE_SECONDS=1.5
+
+# Minimum seconds of actual speech required to trigger transcription.
+# Filters out keyboard clicks, brief coughs, etc.
+MIN_SPEECH_SECONDS=0.3
+
+# ── On-Screen Display (OSD) ───────────────────────────────────────────────────
+
+# osd_cat font (X11 font string).
+OSD_FONT="-adobe-helvetica-bold-r-normal--36-0-0-0-p-0-iso8859-1"
+
+# OSD text colour (X11 colour name or #RRGGBB).
+OSD_COLOR="red"
+
+# OSD text outline thickness in pixels.
+OSD_OUTLINE=2
+
+# OSD vertical position: top | middle | bottom
+OSD_POS="bottom"
+
+# OSD horizontal alignment: left | center | right
+OSD_ALIGN="right"
+
+# OSD offset from the screen edge in pixels.
+OSD_OFFSET=20
