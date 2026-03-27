@@ -9,8 +9,9 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictation"
 CONFIG_FILE="$CONFIG_DIR/whisper-dictation.conf"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
-# Source existing config so WHISPER_MODEL and GNOME_KEYBINDING are available
-# for the model-download and keybinding steps below.
+WHISPER_CPP_VERSION="v1.7.3"
+
+# Source existing config so WHISPER_MODEL and GNOME_KEYBINDING are available.
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 WHISPER_MODEL="${WHISPER_MODEL:-medium.en}"
 GNOME_KEYBINDING="${GNOME_KEYBINDING:-F12}"
@@ -21,87 +22,104 @@ echo "==> Stopping any running instance..."
 if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
     systemctl --user stop whisper-dictation.service 2>/dev/null || true
 else
-    pkill -f "whisper-daemon.py" 2>/dev/null || true
+    pkill -f "whisper-daemon" 2>/dev/null || true
 fi
 rm -f "$RUNTIME_DIR/whisper-dictation-$(id -u).sock" \
       "$RUNTIME_DIR/whisper-dictation-$(id -u).state" \
       "$RUNTIME_DIR/whisper-dictation-$(id -u).lock" \
-      "$RUNTIME_DIR/whisper-dictation-$(id -u).confhash"
-# Also clean legacy /tmp paths if XDG_RUNTIME_DIR is set
-if [ "$RUNTIME_DIR" != "/tmp" ]; then
-    rm -f "/tmp/whisper-dictation-$(id -u).sock" \
-          "/tmp/whisper-dictation-$(id -u).state" \
-          "/tmp/whisper-dictation-$(id -u).lock"
-fi
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).confhash" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).fifo"
 
 # ── System dependencies ────────────────────────────────────────────────────────
 
 echo "==> Installing system dependencies..."
-sudo apt-get install -y python3-venv xdotool pulseaudio-utils socat xosd-bin
+sudo apt-get install -y build-essential cmake git curl \
+    libsdl2-dev xdotool socat xosd-bin
 
-# ── Python venv ────────────────────────────────────────────────────────────────
+# ── iGPU detection and deps ───────────────────────────────────────────────────
 
-echo "==> Setting up Python venv..."
+GPU_CMAKE_FLAGS=""
+
+if lspci | grep -qi "vga.*intel"; then
+    echo "==> Intel iGPU detected, setting up GPU acceleration..."
+
+    # Try SYCL first (Intel oneAPI)
+    echo "    Setting up SYCL (Intel oneAPI)..."
+    if [ ! -f /etc/apt/sources.list.d/intel-oneapi.list ]; then
+        wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+            | sudo gpg --dearmor -o /usr/share/keyrings/intel-oneapi-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/intel-oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+            | sudo tee /etc/apt/sources.list.d/intel-oneapi.list >/dev/null
+        sudo apt-get update
+    fi
+    sudo apt-get install -y intel-oneapi-dpcpp-cpp-compiler intel-oneapi-mkl-devel \
+        libze-intel-gpu1 libze1
+    if [ -f /opt/intel/oneapi/setvars.sh ]; then
+        set +euo pipefail
+        source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1
+        set -euo pipefail
+    fi
+    if icpx --version &>/dev/null; then
+        GPU_CMAKE_FLAGS="-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
+    fi
+
+    # Fall back to Vulkan if SYCL didn't work
+    if [ -z "$GPU_CMAKE_FLAGS" ]; then
+        echo "    SYCL unavailable, trying Vulkan..."
+        sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools glslc
+        if vulkaninfo --summary &>/dev/null; then
+            echo "    Vulkan available."
+            GPU_CMAKE_FLAGS="-DGGML_VULKAN=ON"
+        else
+            echo "    WARNING: No GPU acceleration available, using CPU."
+        fi
+    fi
+else
+    echo "    No Intel iGPU detected, using CPU."
+fi
+
+if [ -n "$GPU_CMAKE_FLAGS" ]; then
+    echo "    GPU build flags: $GPU_CMAKE_FLAGS"
+fi
+
+# ── Build whisper.cpp ──────────────────────────────────────────────────────────
+
+echo "==> Building whisper.cpp..."
 mkdir -p "$INSTALL_DIR"
-if [ ! -f "$INSTALL_DIR/venv/bin/python3" ]; then
-    python3 -m venv "$INSTALL_DIR/venv"
-fi
 
-# ── Python packages ────────────────────────────────────────────────────────────
-
-echo "==> Installing Python packages..."
-if ! "$INSTALL_DIR/venv/bin/python3" -c "import faster_whisper, openvino" 2>/dev/null; then
-    "$INSTALL_DIR/venv/bin/pip" install --quiet faster-whisper openvino
-fi
-if ! "$INSTALL_DIR/venv/bin/python3" -c "import optimum.intel" 2>/dev/null; then
-    "$INSTALL_DIR/venv/bin/pip" install --quiet "optimum-intel[openvino]"
-fi
-
-# ── Whisper model download ─────────────────────────────────────────────────────
-
-echo "==> Pre-downloading Whisper model (~1.5 GB for medium.en)..."
-HF_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/huggingface/hub"
-if [ ! -d "$HF_CACHE/models--Systran--faster-whisper-${WHISPER_MODEL}" ]; then
-    WHISPER_MODEL="$WHISPER_MODEL" "$INSTALL_DIR/venv/bin/python3" - <<'EOF'
-import os
-from faster_whisper import WhisperModel
-model_name = os.environ["WHISPER_MODEL"]
-print(f"Downloading model '{model_name}'...")
-WhisperModel(model_name, device="cpu", compute_type="int8")
-print("Done.")
-EOF
+if [ ! -d "$INSTALL_DIR/whisper.cpp/.git" ]; then
+    echo "    Cloning whisper.cpp $WHISPER_CPP_VERSION..."
+    git clone --depth 1 --branch "$WHISPER_CPP_VERSION" \
+        https://github.com/ggerganov/whisper.cpp.git "$INSTALL_DIR/whisper.cpp"
 else
-    echo "    Model already cached, skipping download."
+    echo "    whisper.cpp source already present, skipping clone."
 fi
 
-# ── OpenVINO model conversion (Intel iGPU only) ────────────────────────────────
-
-echo "==> Pre-converting model to OpenVINO format (one-time, may take a few minutes)..."
-if [ ! -d "$INSTALL_DIR/ov-model" ]; then
-    WHISPER_MODEL="$WHISPER_MODEL" INSTALL_DIR="$INSTALL_DIR" \
-    "$INSTALL_DIR/venv/bin/python3" - <<'EOF'
-import os
-import openvino as ov
-devices = ov.Core().available_devices
-if "GPU" not in devices:
-    print("No Intel GPU found, skipping OpenVINO conversion.")
-else:
-    from optimum.intel import OVModelForSpeechSeq2Seq
-    from transformers import AutoProcessor
-    model_name = os.environ["WHISPER_MODEL"]
-    install_dir = os.environ["INSTALL_DIR"]
-    model_id = f"openai/whisper-{model_name}"
-    print(f"Converting {model_id} to OpenVINO IR...")
-    model = OVModelForSpeechSeq2Seq.from_pretrained(
-        model_id, export=True, device="CPU", load_in_8bit=True
-    )
-    ov_path = os.path.join(install_dir, "ov-model")
-    model.save_pretrained(ov_path)
-    AutoProcessor.from_pretrained(model_id).save_pretrained(ov_path)
-    print("Conversion done.")
-EOF
+if [ ! -f "$INSTALL_DIR/build/bin/stream" ]; then
+    # Clean up any partial build from a previous failed attempt
+    rm -rf "$INSTALL_DIR/build"
+    echo "    Configuring and building (this may take a few minutes)..."
+    cmake -B "$INSTALL_DIR/build" -S "$INSTALL_DIR/whisper.cpp" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DWHISPER_SDL2=ON \
+        $GPU_CMAKE_FLAGS
+    cmake --build "$INSTALL_DIR/build" --config Release -j"$(nproc)" --target stream
 else
-    echo "    OpenVINO model already converted, skipping."
+    echo "    stream binary already built, skipping build."
+fi
+
+# ── Download GGML model ───────────────────────────────────────────────────────
+
+echo "==> Downloading GGML model..."
+MODEL_FILE="ggml-${WHISPER_MODEL}.bin"
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILE}"
+
+if [ ! -f "$INSTALL_DIR/models/$MODEL_FILE" ]; then
+    mkdir -p "$INSTALL_DIR/models"
+    echo "    Downloading $MODEL_FILE..."
+    curl -L -o "$INSTALL_DIR/models/$MODEL_FILE" "$MODEL_URL"
+else
+    echo "    Model already downloaded, skipping."
 fi
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -118,8 +136,8 @@ fi
 # ── Source files ───────────────────────────────────────────────────────────────
 
 echo "==> Installing daemon and toggle script..."
-cp "$REPO_DIR/src/whisper-daemon.py" "$INSTALL_DIR/whisper-daemon.py"
-chmod +x "$INSTALL_DIR/whisper-daemon.py"
+cp "$REPO_DIR/src/whisper-daemon" "$INSTALL_DIR/whisper-daemon"
+chmod +x "$INSTALL_DIR/whisper-daemon"
 
 mkdir -p "$BIN_DIR"
 cp "$REPO_DIR/src/whisper-dictation-toggle" "$BIN_DIR/whisper-dictation-toggle"
@@ -137,7 +155,7 @@ After=graphical-session.target pulseaudio.service pipewire-pulse.service
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/whisper-daemon.py
+ExecStart=$INSTALL_DIR/whisper-daemon
 Restart=on-failure
 RestartSec=5
 Environment=DISPLAY=:0
@@ -179,7 +197,7 @@ echo ""
 echo "==> Done!"
 echo ""
 echo "Press ${GNOME_KEYBINDING} to start dictation."
-echo "First press: loads model (~10 s delay)."
+echo "First press: loads model (~2-3 s delay)."
 echo "Press again to stop; transcription is typed at the cursor."
 echo ""
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then

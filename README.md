@@ -1,8 +1,8 @@
 # whisper-dictation
 
 Press a key, speak, pause — your words appear at the cursor. Powered by
-[faster-whisper](https://github.com/guillaumekynast/faster-whisper) with optional
-Intel iGPU acceleration via OpenVINO.
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) with automatic Intel
+iGPU acceleration via SYCL or Vulkan.
 
 A persistent daemon keeps the model loaded in memory so every toggle after the
 first is instant, with no per-use startup cost.
@@ -15,8 +15,10 @@ first is instant, with no per-use startup cost.
 - **Desktop**: GNOME (for keybinding registration)
 - **Display server**: X11 (Wayland is **not** supported — `xdotool` and `osd_cat` require X11)
 - **Audio**: PulseAudio or PipeWire-Pulse
-- **Python**: 3.10+
-- **Intel iGPU**: optional — enables faster transcription (see [docs/openvino.md](docs/openvino.md))
+- **Intel iGPU**: optional — enables faster transcription (see [docs/gpu.md](docs/gpu.md))
+
+Build dependencies (installed automatically by `install.sh`):
+`build-essential cmake git libsdl2-dev xdotool socat xosd-bin curl`
 
 ---
 
@@ -31,7 +33,7 @@ cd whisper-dictation
 Press **F12** to start dictation. Speak. Pause — the transcription is typed at
 the cursor automatically. Press **F12** again to stop early.
 
-The first press after a reboot loads the model (~10 s). All subsequent presses
+The first press after a reboot loads the model (~2-3 s). All subsequent presses
 are instant.
 
 ---
@@ -44,12 +46,13 @@ from `whisper-dictation.conf.example`. Re-running `install.sh` never overwrites 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `WHISPER_MODEL` | `medium.en` | Model to use (see [Model Selection](#model-selection)) |
+| `WHISPER_LANGUAGE` | `en` | Language code (empty = auto-detect) |
 | `GNOME_KEYBINDING` | `F12` | Key registered in GNOME |
-| `SAMPLE_RATE` | `16000` | Audio sample rate in Hz |
-| `MAX_SPEECH_SECONDS` | `120` | Maximum speech seconds before auto-flush to transcription |
-| `SILENCE_RMS` | `300` | RMS threshold below which audio is silence (0–32767) |
-| `SILENCE_SECONDS` | `1.5` | Seconds of silence before auto-transcription fires |
-| `MIN_SPEECH_SECONDS` | `0.3` | Minimum speech seconds to bother transcribing |
+| `THREADS` | `4` | Threads for whisper.cpp inference |
+| `STREAM_LENGTH` | `10000` | Audio buffer length in ms |
+| `VAD_THRESHOLD` | `0.6` | VAD sensitivity (0.0–1.0, lower = more sensitive) |
+| `FREQ_THRESHOLD` | `100.0` | High-pass frequency filter in Hz |
+| `EXTRA_STREAM_ARGS` | (empty) | Extra flags passed to whisper-stream |
 | `OSD_FONT` | Adobe Helvetica 36 | X11 font string for on-screen display |
 | `OSD_COLOR` | `red` | OSD text colour (X11 name or `#RRGGBB`) |
 | `OSD_OUTLINE` | `2` | OSD text outline thickness in pixels |
@@ -73,44 +76,48 @@ toggle key — the daemon detects config changes and restarts automatically.
 ```
 F12
  └─► whisper-dictation-toggle
-       ├─ daemon not running? → spawn whisper-daemon.py (loads model once, ~10 s)
+       ├─ daemon not running? → spawn whisper-daemon (loads model, ~2-3 s)
        └─ daemon running?     → send "start" or "stop" via Unix socket
 
-whisper-daemon.py
- └─► parec (PulseAudio) → 16-bit PCM chunks
-       └─► RMS VAD → silence detected after speech?
-             └─► faster-whisper or OpenVINO → text
-                   └─► xdotool type → text appears at cursor
+whisper-daemon
+ └─► whisper-stream (whisper.cpp)
+       └─► SDL2 audio → built-in VAD → transcription
+             └─► parse output → xdotool type → text appears at cursor
 ```
 
-The toggle script tracks on/off state in `/tmp/whisper-dictation-<uid>.state`.
+The toggle script tracks on/off state in `$XDG_RUNTIME_DIR/whisper-dictation-<uid>.state`.
 The daemon runs until killed or the machine reboots.
 
 ---
 
 ## Model Selection
 
-| Model | Size | English WER | Relative speed (CPU) |
-|-------|------|-------------|----------------------|
+| Model | GGML Size | English WER | Relative speed |
+|-------|-----------|-------------|----------------|
 | `tiny.en` | ~75 MB | high | fastest |
 | `base.en` | ~145 MB | good | fast |
 | `small.en` | ~465 MB | better | moderate |
 | `medium.en` | ~1.5 GB | best (English-only) | slow |
 | `large-v3` | ~3 GB | best (multilingual) | slowest |
 
-For multilingual dictation use `large-v3` (drop the `.en` suffix) and remove
-`language="en"` from `whisper-daemon.py:model.transcribe(...)`.
+For multilingual dictation use `large-v3` and set `WHISPER_LANGUAGE=""` (auto-detect)
+or set it to your language code.
 
-Change the model in your config file, delete the old model cache if desired, and
-re-run `./install.sh` to download and optionally convert the new model.
+Change the model in your config file and re-run `./install.sh` to download the
+new GGML model file.
 
 ---
 
-## OpenVINO / Intel iGPU
+## GPU Acceleration
 
-If an Intel GPU is detected at install time, the model is converted to OpenVINO
-IR format for faster transcription on the iGPU. See [docs/openvino.md](docs/openvino.md)
-for details, GPU requirements, and how to force re-conversion.
+`install.sh` automatically detects Intel iGPUs and installs GPU acceleration:
+
+1. **SYCL** (preferred) — Intel oneAPI DPC++ compiler, best performance on Intel Arc
+2. **Vulkan** (fallback) — cross-vendor, good performance
+3. **CPU** — no GPU deps needed
+
+See [docs/gpu.md](docs/gpu.md) for details, manual setup, and how to force a
+specific backend.
 
 ---
 
@@ -121,8 +128,13 @@ git pull
 ./install.sh
 ```
 
-`install.sh` always copies the latest source files from the repo. Model download
-and OpenVINO conversion are skipped if already done.
+`install.sh` is idempotent — it only does work that's actually needed. To force
+a rebuild of whisper.cpp (e.g., after changing GPU backend):
+
+```bash
+rm -rf ~/.local/share/whisper-dictation/build
+./install.sh
+```
 
 ---
 
@@ -132,16 +144,14 @@ and OpenVINO conversion are skipped if already done.
 ./uninstall.sh
 ```
 
-This removes the daemon, toggle script, Python venv, and GNOME keybinding.
-Your config (`~/.config/whisper-dictation/`) and the HuggingFace model cache
-are preserved. To remove the config too:
+This removes the daemon, toggle script, whisper.cpp build, and GNOME keybinding.
+Your config (`~/.config/whisper-dictation/`) is preserved. To remove it too:
 
 ```bash
 ./uninstall.sh --purge
 ```
 
-The HuggingFace cache (`~/.cache/huggingface/`) is never touched as it may be
-shared with other tools. Remove it manually if no longer needed.
+GGML models are stored inside the install directory and are removed with it.
 
 ---
 
@@ -154,9 +164,9 @@ whisper-dictation-toggle
 ```
 
 **No audio captured**
-Verify `parec` works:
+Verify SDL2 can see your audio device:
 ```bash
-parec --format=s16le --rate=16000 --channels=1 | head -c 1000 | xxd
+~/.local/share/whisper-dictation/build/bin/whisper-stream --list-devices
 ```
 Check that PulseAudio or PipeWire-Pulse is running: `pactl info`.
 
@@ -167,13 +177,13 @@ echo "test" | osd_cat --pos=bottom --align=right --delay=3
 ```
 
 **Transcription in the wrong language**
-Use `medium` (multilingual) instead of `medium.en`, and either remove the
-`language="en"` parameter in `whisper-daemon.py` or set it to your language code.
+Set `WHISPER_LANGUAGE=""` (auto-detect) or set it to your language code.
+Use a multilingual model (`large-v3`) instead of an `.en` model.
 
 **Transcription is slow**
 - Switch to a smaller model (`small.en` or `base.en`)
-- Check whether OpenVINO conversion ran: `ls ~/.local/share/whisper-dictation/ov-model/`
-- See [docs/openvino.md](docs/openvino.md) for iGPU setup
+- Check whether GPU acceleration is active: look for GPU flags in `install.sh` output
+- See [docs/gpu.md](docs/gpu.md) for GPU setup
 
 **Not working under Wayland**
 This project uses `xdotool` and `osd_cat`, which are X11-only. On GNOME, you can

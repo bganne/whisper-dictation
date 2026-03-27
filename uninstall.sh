@@ -20,17 +20,12 @@ if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
     systemctl --user stop whisper-dictation.service 2>/dev/null || true
     systemctl --user disable whisper-dictation.service 2>/dev/null || true
 fi
-pkill -f "whisper-daemon.py" 2>/dev/null || true
+pkill -f "whisper-daemon" 2>/dev/null || true
 rm -f "$RUNTIME_DIR/whisper-dictation-$(id -u).sock" \
       "$RUNTIME_DIR/whisper-dictation-$(id -u).state" \
       "$RUNTIME_DIR/whisper-dictation-$(id -u).lock" \
-      "$RUNTIME_DIR/whisper-dictation-$(id -u).confhash"
-# Also clean legacy /tmp paths if XDG_RUNTIME_DIR is set
-if [ "$RUNTIME_DIR" != "/tmp" ]; then
-    rm -f "/tmp/whisper-dictation-$(id -u).sock" \
-          "/tmp/whisper-dictation-$(id -u).state" \
-          "/tmp/whisper-dictation-$(id -u).lock"
-fi
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).confhash" \
+      "$RUNTIME_DIR/whisper-dictation-$(id -u).fifo"
 
 # ── Remove systemd service ────────────────────────────────────────────────────
 
@@ -44,10 +39,8 @@ echo "==> Removing GNOME keybinding..."
 EXISTING=$(gsettings get "$SCHEMA" custom-keybindings 2>/dev/null || echo "@as []")
 if echo "$EXISTING" | grep -q "custom-whisper-dictation"; then
     NEW=$(echo "$EXISTING" | sed "s|, '$BINDING_PATH'||g; s|'$BINDING_PATH', ||g; s|'$BINDING_PATH'||g")
-    # Normalise empty list variants
     NEW=$(echo "$NEW" | sed "s|\[\s*\]|[]|g")
     gsettings set "$SCHEMA" custom-keybindings "$NEW"
-    # Reset the binding subkeys
     gsettings reset "${SCHEMA}.custom-keybinding:${BINDING_PATH}" name    2>/dev/null || true
     gsettings reset "${SCHEMA}.custom-keybinding:${BINDING_PATH}" command 2>/dev/null || true
     gsettings reset "${SCHEMA}.custom-keybinding:${BINDING_PATH}" binding 2>/dev/null || true
@@ -61,7 +54,7 @@ fi
 echo "==> Removing toggle script..."
 rm -f "$BIN_DIR/whisper-dictation-toggle"
 
-# ── Remove installation directory (venv + daemon) ─────────────────────────────
+# ── Remove installation directory ──────────────────────────────────────────────
 
 echo "==> Removing installation directory..."
 rm -rf "$INSTALL_DIR"
@@ -83,5 +76,3 @@ if ! $PURGE; then
     echo "  Config : $CONFIG_DIR"
     echo "           (remove manually, or re-run with --purge)"
 fi
-echo "  HF model cache : ${XDG_CACHE_HOME:-$HOME/.cache}/huggingface"
-echo "           (shared with other tools; remove manually if no longer needed)"

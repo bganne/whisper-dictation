@@ -10,27 +10,30 @@
 # Options: tiny.en  base.en  small.en  medium.en  large-v3
 WHISPER_MODEL="medium.en"
 
+# Language code for transcription (empty string = auto-detect).
+WHISPER_LANGUAGE="en"
+
 # ── Keybinding ────────────────────────────────────────────────────────────────
 
 # Key registered as the GNOME custom keybinding (xkb key name).
 GNOME_KEYBINDING="F12"
 
-# ── Audio / VAD ───────────────────────────────────────────────────────────────
+# ── Whisper-stream ────────────────────────────────────────────────────────────
 
-# Audio sample rate in Hz. Both parec and Whisper expect 16000; change only if
-# you know what you are doing.
-SAMPLE_RATE=16000
+# Number of threads for whisper.cpp inference.
+THREADS=4
 
-# RMS amplitude below which audio is considered silence (0–32767 scale).
-# Increase in noisy environments; decrease if the VAD cuts off your speech.
-SILENCE_RMS=300
+# Audio buffer length in ms (how much audio whisper-stream holds).
+STREAM_LENGTH=10000
 
-# Seconds of continuous silence after speech before transcription fires.
-SILENCE_SECONDS=1.5
+# VAD sensitivity threshold (0.0–1.0, lower = more sensitive).
+VAD_THRESHOLD=0.6
 
-# Minimum seconds of actual speech required to trigger transcription.
-# Filters out keyboard clicks, brief coughs, etc.
-MIN_SPEECH_SECONDS=0.3
+# High-pass frequency threshold in Hz (filters low-frequency noise).
+FREQ_THRESHOLD=100.0
+
+# Extra arguments passed directly to whisper-stream (advanced).
+EXTRA_STREAM_ARGS=""
 
 # ── On-Screen Display (OSD) ───────────────────────────────────────────────────
 

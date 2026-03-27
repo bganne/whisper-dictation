@@ -28,7 +28,7 @@ if [ -S "$SOCKET" ] && [ -f "$CONFIG_FILE" ]; then
         if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
             systemctl --user restart whisper-dictation.service
         else
-            pkill -f "whisper-daemon.py" 2>/dev/null || true
+            pkill -f "whisper-daemon" 2>/dev/null || true
         fi
         rm -f "$SOCKET" "$STATEFILE"
         sleep 0.5
@@ -45,7 +45,7 @@ if [ ! -S "$SOCKET" ]; then
     else
         (
             flock -n 9 || exit 0
-            "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/whisper-daemon.py" &
+            "$INSTALL_DIR/whisper-daemon" &
         ) 9>"$LOCKFILE"
     fi
     for i in $(seq 30); do
