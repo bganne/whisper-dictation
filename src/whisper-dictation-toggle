@@ -15,7 +15,6 @@ INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/whisper-dictation"
 
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 SOCKET="$RUNTIME_DIR/whisper-dictation-$(id -u).sock"
-STATEFILE="$RUNTIME_DIR/whisper-dictation-$(id -u).state"
 LOCKFILE="$RUNTIME_DIR/whisper-dictation-$(id -u).lock"
 CONFHASH_FILE="$RUNTIME_DIR/whisper-dictation-$(id -u).confhash"
 
@@ -30,16 +29,15 @@ if [ -S "$SOCKET" ] && [ -f "$CONFIG_FILE" ]; then
         else
             pkill -f "whisper-daemon" 2>/dev/null || true
         fi
-        rm -f "$SOCKET" "$STATEFILE"
+        rm -f "$SOCKET"
         sleep 0.5
         # Fall through to the daemon-start path below
     fi
 fi
 
-# ── Toggle logic ───────────────────────────────────────────────────────────────
+# ── Start daemon if not running ────────────────────────────────────────────────
 
 if [ ! -S "$SOCKET" ]; then
-    # Daemon not running — start it (flock prevents double spawn)
     if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
         systemctl --user start whisper-dictation.service
     else
@@ -52,20 +50,15 @@ if [ ! -S "$SOCKET" ]; then
         [ -S "$SOCKET" ] && break
         sleep 1
     done
-    # Save config hash for change detection
     [ -f "$CONFIG_FILE" ] && md5sum "$CONFIG_FILE" | cut -d' ' -f1 > "$CONFHASH_FILE"
-    echo "on" > "$STATEFILE"
-elif [ -f "$STATEFILE" ] && [ "$(cat "$STATEFILE")" = "on" ]; then
-    if ! echo "stop" | socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null; then
-        # Socket exists but daemon is dead — clean up and re-launch
-        rm -f "$SOCKET" "$STATEFILE"
-        exec "$0"
-    fi
-    echo "off" > "$STATEFILE"
-else
-    if ! echo "start" | socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null; then
-        rm -f "$SOCKET" "$STATEFILE"
-        exec "$0"
-    fi
-    echo "on" > "$STATEFILE"
+    # Daemon auto-starts in lang[0]; first keypress already handled by launch.
+    exit 0
+fi
+
+# ── Daemon already running — cycle to next language/off ───────────────────────
+
+if ! echo "cycle" | socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null; then
+    # Socket exists but daemon is dead — clean up and re-launch
+    rm -f "$SOCKET"
+    exec "$0"
 fi

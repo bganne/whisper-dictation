@@ -18,7 +18,7 @@ INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/whisper-dictation"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
 WHISPER_MODEL="${WHISPER_MODEL:-medium.en}"
-WHISPER_LANGUAGE="${WHISPER_LANGUAGE:-en}"
+WHISPER_LANGUAGES="${WHISPER_LANGUAGES:-en}"
 THREADS="${THREADS:-4}"
 STREAM_LENGTH="${STREAM_LENGTH:-10000}"
 VAD_THRESHOLD="${VAD_THRESHOLD:-0.6}"
@@ -44,6 +44,14 @@ STREAM_BIN="$INSTALL_DIR/build/bin/stream"
 STREAM_PID=""
 READER_PID=""
 OSD_PID=""
+
+# Language cycle: -1 = off, 0..N = index into LANG_LIST
+read -ra LANG_LIST <<< "$WHISPER_LANGUAGES"
+LANG_INDEX=-1
+ACTIVE_LANGUAGE="${LANG_LIST[0]}"
+
+# Backend is detected once on first start and cached
+BACKEND=""
 
 # ── OSD ────────────────────────────────────────────────────────────────────────
 
@@ -73,6 +81,7 @@ osd() {
 parse_and_type() {
     local text=""
     local in_block=false
+    local last_typed=""
 
     while IFS= read -r line; do
         if [[ "$line" == "### Transcription "* ]]; then
@@ -83,8 +92,9 @@ parse_and_type() {
                 in_block=false
                 text="${text#"${text%%[![:space:]]*}"}"
                 text="${text%"${text##*[![:space:]]}"}"
-                if [ -n "$text" ]; then
+                if [ -n "$text" ] && [ "$text" != "$last_typed" ]; then
                     xdotool type --clearmodifiers --delay 0 -- "$text"
+                    last_typed="$text"
                 fi
                 text=""
             fi
@@ -93,7 +103,6 @@ parse_and_type() {
 
         if $in_block; then
             # Strip all bracketed tokens: timestamps, [BLANK_AUDIO], (Silence), …
-            # If nothing remains, the line is skipped below.
             line=$(sed -E 's/\[[^]]*\]|\([^)]*\)//g; s/^[[:space:]]*//' <<< "$line")
             [ -n "$line" ] || continue
             [ -n "$text" ] && text="$text "
@@ -111,11 +120,13 @@ do_start() {
     mkfifo "$FIFO"
 
     local lang_args=""
-    [ -n "$WHISPER_LANGUAGE" ] && lang_args="--language $WHISPER_LANGUAGE"
+    [ -n "$ACTIVE_LANGUAGE" ] && lang_args="--language $ACTIVE_LANGUAGE"
 
     local stderr_log="$RUNTIME_DIR/whisper-dictation-$(id -u).stderr"
+    local lang_label="${ACTIVE_LANGUAGE^^}"
 
-    osd "loading..." true
+    # Show loading OSD — use cached backend or fixed-width placeholder
+    osd "loading [$lang_label] [${BACKEND:-------}]" true
 
     "$STREAM_BIN" \
         --model "$MODEL_PATH" \
@@ -132,20 +143,26 @@ do_start() {
     parse_and_type &
     READER_PID=$!
 
-    # Detect backend from whisper.cpp stderr (waits up to 5s)
-    local backend="CPU"
-    for _ in $(seq 50); do
-        if grep -qi "sycl" "$stderr_log" 2>/dev/null; then
-            backend="SYCL"; break
-        elif grep -qi "vulkan" "$stderr_log" 2>/dev/null; then
-            backend="Vulkan"; break
-        elif grep -q "using.*backend" "$stderr_log" 2>/dev/null; then
-            break
-        fi
-        sleep 0.1
-    done
+    # Detect backend once, then cache it for future loading screens
+    if [ -z "$BACKEND" ]; then
+        local backend="unknown"
+        for _ in $(seq 50); do
+            if grep -qi "sycl" "$stderr_log" 2>/dev/null; then
+                backend="SYCL"; break
+            elif grep -qi "vulkan" "$stderr_log" 2>/dev/null; then
+                backend="Vulkan"; break
+            elif grep -qi "cpu" "$stderr_log" 2>/dev/null; then
+                backend="CPU"; break
+            fi
+            sleep 0.1
+        done
+        # Pad to width of longest backend ("unknown" = 7) so brackets stay fixed
+        BACKEND=$(printf '%-7s' "$backend")
+        osd "loading [$lang_label] [$BACKEND]" true
+        sleep 1
+    fi
 
-    osd "* REC * [$backend]" true
+    osd "* REC * [$lang_label]" true
 }
 
 do_stop() {
@@ -161,6 +178,41 @@ do_stop() {
     osd ""
 }
 
+# ── Language commands ──────────────────────────────────────────────────────────
+
+# lang <code>: switch to a specific language, restarting stream if running
+do_lang() {
+    local code="$1"
+    [ -z "$code" ] && return
+    local was_running=false
+    [ -n "$STREAM_PID" ] && was_running=true
+    do_stop
+    ACTIVE_LANGUAGE="$code"
+    # Keep LANG_INDEX in sync if the language is in the cycle list
+    local i
+    for i in "${!LANG_LIST[@]}"; do
+        if [ "${LANG_LIST[$i]}" = "$code" ]; then
+            LANG_INDEX=$i
+            break
+        fi
+    done
+    $was_running && do_start
+}
+
+# cycle: off → lang[0] → lang[1] → … → lang[N] → off → …
+do_cycle() {
+    local next=$(( LANG_INDEX + 1 ))
+    if [ "$next" -ge "${#LANG_LIST[@]}" ]; then
+        do_stop
+        LANG_INDEX=-1
+    else
+        LANG_INDEX=$next
+        ACTIVE_LANGUAGE="${LANG_LIST[$LANG_INDEX]}"
+        do_stop
+        do_start
+    fi
+}
+
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 
 cleanup() {
@@ -173,21 +225,27 @@ trap cleanup SIGTERM SIGINT
 
 # ── Model loading indicator ───────────────────────────────────────────────────
 
-echo "whisper-daemon starting, model=$WHISPER_MODEL" >&2
+echo "whisper-daemon starting, model=$WHISPER_MODEL languages=$WHISPER_LANGUAGES" >&2
 
 # ── Socket server ──────────────────────────────────────────────────────────────
 
 rm -f "$SOCKET"
 
 # Start recording immediately — daemon is launched on first keypress
+LANG_INDEX=0
+ACTIVE_LANGUAGE="${LANG_LIST[0]}"
 do_start
 
 while true; do
     cmd=$(socat -T5 UNIX-LISTEN:"$SOCKET",mode=0600 STDOUT 2>/dev/null) || continue
+    # Strip trailing newline, then trim leading/trailing whitespace
     cmd="${cmd%%$'\n'*}"
-    cmd="${cmd// /}"
+    cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+    cmd="${cmd%"${cmd##*[![:space:]]}"}"
     case "$cmd" in
-        start) do_start ;;
-        stop)  do_stop  ;;
+        start)     do_start ;;
+        stop)      do_stop  ;;
+        cycle)     do_cycle ;;
+        "lang "*)  do_lang "${cmd#lang }" ;;
     esac
 done

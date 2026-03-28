@@ -7,11 +7,15 @@
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 # Whisper model to use. See README.md for the speed/accuracy trade-off table.
-# Options: tiny.en  base.en  small.en  medium.en  large-v3
-WHISPER_MODEL="medium.en"
+# English-only (faster):   tiny.en  base.en  small.en  medium.en
+# Multilingual (fr, de…):  tiny     base     small     medium    large-v3
+# NOTE: A multilingual model (no .en suffix) is required for non-English languages.
+WHISPER_MODEL="medium"
 
-# Language code for transcription (empty string = auto-detect).
-WHISPER_LANGUAGE="en"
+# Space-separated list of languages to cycle through when pressing the keybinding.
+# Each press advances: off → <first> → <second> → … → off → …
+# For English-only, set WHISPER_LANGUAGES="en" and WHISPER_MODEL="medium.en".
+WHISPER_LANGUAGES="en fr"
 
 # ── Keybinding ────────────────────────────────────────────────────────────────
 
