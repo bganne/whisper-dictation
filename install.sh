@@ -19,11 +19,11 @@ GNOME_KEYBINDING="${GNOME_KEYBINDING:-F12}"
 # ── Stop any running instance ──────────────────────────────────────────────────
 
 echo "==> Stopping any running instance..."
-if systemctl --user is-enabled whisper-dictation.service &>/dev/null; then
-    systemctl --user stop whisper-dictation.service 2>/dev/null || true
-else
-    pkill -f "whisper-daemon" 2>/dev/null || true
-fi
+# Stop systemd-managed instance first (prevents auto-restart on failure)
+systemctl --user stop whisper-dictation.service 2>/dev/null || true
+# Also kill any manually-started instances not managed by systemd
+pkill -f "whisper-daemon" 2>/dev/null || true
+sleep 1
 rm -f "$RUNTIME_DIR/whisper-dictation-$(id -u).sock" \
       "$RUNTIME_DIR/whisper-dictation-$(id -u).state" \
       "$RUNTIME_DIR/whisper-dictation-$(id -u).lock" \

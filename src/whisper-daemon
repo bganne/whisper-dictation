@@ -78,10 +78,32 @@ osd() {
 
 # ── Parse stream output and type ───────────────────────────────────────
 
+# Lowercase and strip non-alphanumeric characters for word comparison
+_normalize_word() {
+    local w="${1,,}"
+    w="${w//[^abcdefghijklmnopqrstuvwxyz0-9]/}"
+    printf '%s' "$w"
+}
+
+# Known whisper hallucinations on silence/noise — block these exactly
+_is_hallucination() {
+    local t="${1,,}"
+    t="${t%.}"   # strip trailing period for normalisation
+    case "$t" in
+        "thank you"|"thanks for watching"|"thanks for watching!"|"you"|"bye"|\
+        "bye!"|"goodbye"|"please subscribe"|"subscribe"|"like and subscribe"|\
+        "see you next time"|"see you in the next video"|"subtitles by"|\
+        "subtitled by"|"transcribed by"|"captions by"|"ご視聴ありがとうございました"|\
+        "") return 0 ;;
+    esac
+    return 1
+}
+
 parse_and_type() {
     local text=""
     local in_block=false
-    local last_typed=""
+    local -a typed_history=()
+    local HISTORY_LIMIT=150
 
     while IFS= read -r line; do
         if [[ "$line" == "### Transcription "* ]]; then
@@ -92,10 +114,65 @@ parse_and_type() {
                 in_block=false
                 text="${text#"${text%%[![:space:]]*}"}"
                 text="${text%"${text##*[![:space:]]}"}"
-                if [ -n "$text" ] && [ "$text" != "$last_typed" ]; then
-                    xdotool type --clearmodifiers --delay 0 -- "$text"
-                    last_typed="$text"
+
+                if [ -n "$text" ]; then
+                    local -a new_words
+                    read -ra new_words <<< "$text"
+
+                    # Skip single-word blocks (almost always noise artifacts)
+                    [ ${#new_words[@]} -lt 2 ] && { text=""; continue; }
+
+                    # Skip known whisper hallucinations
+                    _is_hallucination "$text" && { text=""; continue; }
+
+                    if [ ${#typed_history[@]} -eq 0 ]; then
+                        # First block: type everything
+                        xdotool type --clearmodifiers --delay 0 -- "$text"
+                        typed_history=("${new_words[@]}")
+                    else
+                        # Find longest overlap: suffix of history matching prefix of new block
+                        local typed_len=${#typed_history[@]}
+                        local new_len=${#new_words[@]}
+                        local max_k=$(( typed_len < new_len ? typed_len : new_len ))
+                        local overlap=0
+                        local k j match typed_norm new_norm
+                        for (( k = max_k; k >= 3; k-- )); do
+                            match=true
+                            for (( j = 0; j < k; j++ )); do
+                                typed_norm=$(_normalize_word "${typed_history[typed_len - k + j]}")
+                                new_norm=$(_normalize_word "${new_words[j]}")
+                                if [[ "$typed_norm" != "$new_norm" ]]; then
+                                    match=false
+                                    break
+                                fi
+                            done
+                            if $match; then
+                                overlap=$k
+                                break
+                            fi
+                        done
+
+                        if [ "$overlap" -ge 3 ]; then
+                            # Type only the novel suffix
+                            local -a novel_words=("${new_words[@]:$overlap}")
+                            if [ ${#novel_words[@]} -gt 0 ]; then
+                                xdotool type --clearmodifiers --delay 0 -- " ${novel_words[*]}"
+                                typed_history+=("${novel_words[@]}")
+                            fi
+                            # else: entire block already typed, skip
+                        else
+                            # No significant overlap — new sentence or after silence
+                            xdotool type --clearmodifiers --delay 0 -- " ${text}"
+                            typed_history+=("${new_words[@]}")
+                        fi
+
+                        # Trim history to bounded size
+                        if [ ${#typed_history[@]} -gt $HISTORY_LIMIT ]; then
+                            typed_history=("${typed_history[@]: -$HISTORY_LIMIT}")
+                        fi
+                    fi
                 fi
+
                 text=""
             fi
             continue
