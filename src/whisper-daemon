@@ -19,7 +19,7 @@ RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
 WHISPER_MODEL="${WHISPER_MODEL:-medium.en}"
 WHISPER_LANGUAGES="${WHISPER_LANGUAGES:-en}"
-THREADS="${THREADS:-4}"
+THREADS="${THREADS:-8}"
 STREAM_LENGTH="${STREAM_LENGTH:-10000}"
 VAD_THRESHOLD="${VAD_THRESHOLD:-0.6}"
 FREQ_THRESHOLD="${FREQ_THRESHOLD:-100.0}"
@@ -78,13 +78,6 @@ osd() {
 
 # ── Parse stream output and type ───────────────────────────────────────
 
-# Lowercase and strip non-alphanumeric characters for word comparison
-_normalize_word() {
-    local w="${1,,}"
-    w="${w//[^abcdefghijklmnopqrstuvwxyz0-9]/}"
-    printf '%s' "$w"
-}
-
 # Known whisper hallucinations on silence/noise — block these exactly
 _is_hallucination() {
     local t="${1,,}"
@@ -139,8 +132,10 @@ parse_and_type() {
                         for (( k = max_k; k >= 3; k-- )); do
                             match=true
                             for (( j = 0; j < k; j++ )); do
-                                typed_norm=$(_normalize_word "${typed_history[typed_len - k + j]}")
-                                new_norm=$(_normalize_word "${new_words[j]}")
+                                typed_norm="${typed_history[typed_len - k + j],,}"
+                                typed_norm="${typed_norm//[^abcdefghijklmnopqrstuvwxyz0-9]/}"
+                                new_norm="${new_words[j],,}"
+                                new_norm="${new_norm//[^abcdefghijklmnopqrstuvwxyz0-9]/}"
                                 if [[ "$typed_norm" != "$new_norm" ]]; then
                                     match=false
                                     break
@@ -196,8 +191,11 @@ do_start() {
     rm -f "$FIFO"
     mkfifo "$FIFO"
 
-    local lang_args=""
-    [ -n "$ACTIVE_LANGUAGE" ] && lang_args="--language $ACTIVE_LANGUAGE"
+    local -a lang_args=()
+    [ -n "$ACTIVE_LANGUAGE" ] && lang_args=(--language "$ACTIVE_LANGUAGE")
+
+    local -a extra_args=()
+    [ -n "$EXTRA_STREAM_ARGS" ] && read -ra extra_args <<< "$EXTRA_STREAM_ARGS"
 
     local stderr_log="$RUNTIME_DIR/whisper-dictation-$(id -u).stderr"
     local lang_label="${ACTIVE_LANGUAGE^^}"
@@ -212,8 +210,9 @@ do_start() {
         --length "$STREAM_LENGTH" \
         --vad-thold "$VAD_THRESHOLD" \
         --freq-thold "$FREQ_THRESHOLD" \
-        $lang_args \
-        $EXTRA_STREAM_ARGS \
+        --no-fallback \
+        "${lang_args[@]}" \
+        "${extra_args[@]}" \
         > "$FIFO" 2>"$stderr_log" &
     STREAM_PID=$!
 
@@ -223,7 +222,8 @@ do_start() {
     # Detect backend once, then cache it for future loading screens
     if [ -z "$BACKEND" ]; then
         local backend="unknown"
-        for _ in $(seq 50); do
+        for _ in $(seq 100); do
+            kill -0 "$STREAM_PID" 2>/dev/null || break
             if grep -qi "sycl" "$stderr_log" 2>/dev/null; then
                 backend="SYCL"; break
             elif grep -qi "vulkan" "$stderr_log" 2>/dev/null; then
@@ -248,6 +248,13 @@ do_stop() {
     kill "$STREAM_PID" 2>/dev/null && wait "$STREAM_PID" 2>/dev/null || true
     STREAM_PID=""
 
+    # Reader exits naturally when the FIFO write-end closes (stream EOF).
+    # Give it up to 0.5 s to finish any in-progress xdotool type before force-killing.
+    local i
+    for i in 1 2 3 4 5; do
+        kill -0 "$READER_PID" 2>/dev/null || break
+        sleep 0.1
+    done
     kill "$READER_PID" 2>/dev/null && wait "$READER_PID" 2>/dev/null || true
     READER_PID=""
 

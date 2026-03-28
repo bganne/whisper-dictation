@@ -45,10 +45,10 @@ from `whisper-dictation.conf.example`. Re-running `install.sh` never overwrites 
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `WHISPER_MODEL` | `medium.en` | Model to use (see [Model Selection](#model-selection)) |
-| `WHISPER_LANGUAGE` | `en` | Language code (empty = auto-detect) |
+| `WHISPER_MODEL` | `medium.en` | Model to use (see [Model Selection](#model-selection)). Code default: `medium.en`; example config default: `medium` (for multilingual cycling) |
+| `WHISPER_LANGUAGES` | `en` | Space-separated language codes to cycle through (e.g. `en fr de`). Each keybinding press advances: off → first → second → … → off. See [whisper.cpp language list](https://github.com/ggerganov/whisper.cpp/blob/master/src/whisper.cpp#L100) for codes |
 | `GNOME_KEYBINDING` | `F12` | Key registered in GNOME |
-| `THREADS` | `4` | Threads for whisper.cpp inference |
+| `THREADS` | `8` | Threads for whisper.cpp inference |
 | `STREAM_LENGTH` | `10000` | Audio buffer length in ms |
 | `VAD_THRESHOLD` | `0.6` | VAD sensitivity (0.0–1.0, lower = more sensitive) |
 | `FREQ_THRESHOLD` | `100.0` | High-pass frequency filter in Hz |
@@ -100,8 +100,8 @@ The daemon runs until killed or the machine reboots.
 | `medium.en` | ~1.5 GB | best (English-only) | slow |
 | `large-v3` | ~3 GB | best (multilingual) | slowest |
 
-For multilingual dictation use `large-v3` and set `WHISPER_LANGUAGE=""` (auto-detect)
-or set it to your language code.
+For multilingual dictation use `large-v3` and set `WHISPER_LANGUAGES="en fr"` (or your codes).
+Use a multilingual model (no `.en` suffix) when cycling non-English languages.
 
 Change the model in your config file and re-run `./install.sh` to download the
 new GGML model file.
@@ -177,8 +177,7 @@ echo "test" | osd_cat --pos=bottom --align=right --delay=3
 ```
 
 **Transcription in the wrong language**
-Set `WHISPER_LANGUAGE=""` (auto-detect) or set it to your language code.
-Use a multilingual model (`large-v3`) instead of an `.en` model.
+Set `WHISPER_LANGUAGES="en fr"` (or your codes) and use a multilingual model (`large-v3` or `medium`) instead of an `.en` model.
 
 **Transcription is slow**
 - Switch to a smaller model (`small.en` or `base.en`)

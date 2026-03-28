@@ -67,7 +67,7 @@ models (`tiny.en`, `base.en`, `small.en`).
 
 ## Forcing a Specific Backend
 
-Delete the build directory and set an environment variable before install:
+Delete the build directory and set `WHISPER_GPU` before running `install.sh`:
 
 ```bash
 rm -rf ~/.local/share/whisper-dictation/build
@@ -75,12 +75,14 @@ rm -rf ~/.local/share/whisper-dictation/build
 # Force Vulkan even if SYCL is available
 WHISPER_GPU=vulkan ./install.sh
 
-# Force CPU only
+# Force CPU only (no GPU deps installed or detected)
 WHISPER_GPU=cpu ./install.sh
+
+# Force SYCL (Intel oneAPI)
+WHISPER_GPU=sycl ./install.sh
 ```
 
-(Note: `WHISPER_GPU` override is not yet implemented — for now, remove the SYCL
-packages or Vulkan drivers to influence detection.)
+`WHISPER_GPU` accepts: `auto` (default), `cpu`, `vulkan`, `sycl`.
 
 ---
 
@@ -97,7 +99,7 @@ Look for lines indicating the compute device. You can also test directly:
 ```bash
 ~/.local/share/whisper-dictation/build/bin/whisper-stream \
     --model ~/.local/share/whisper-dictation/models/ggml-medium.en.bin \
-    --step 0
+    --step 3000
 ```
 
 ---
