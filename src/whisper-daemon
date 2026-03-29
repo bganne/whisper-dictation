@@ -110,7 +110,9 @@ parse_and_type() {
 
                 if [ -n "$text" ]; then
                     local -a new_words
-                    read -ra new_words <<< "$text"
+                    # Replace hyphens with spaces before splitting so "rendez-vous"
+                    # and "rendez vous" produce the same tokens for dedup matching.
+                    read -ra new_words <<< "${text//-/ }"
 
                     # Skip single-word blocks (almost always noise artifacts)
                     [ ${#new_words[@]} -lt 2 ] && { text=""; continue; }
