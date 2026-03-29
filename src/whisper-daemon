@@ -175,7 +175,7 @@ parse_and_type() {
 
         if $in_block; then
             # Strip all bracketed tokens: timestamps, [BLANK_AUDIO], (Silence), …
-            line=$(sed -E 's/\[[^]]*\]|\([^)]*\)//g; s/^[[:space:]]*//' <<< "$line")
+            line=$(sed -E 's/\[[^]]*\]|\([^)]*\)|\*[^*]*\*//g; s/^[[:space:]]*//' <<< "$line")
             [ -n "$line" ] || continue
             [ -n "$text" ] && text="$text "
             text="${text}${line}"
