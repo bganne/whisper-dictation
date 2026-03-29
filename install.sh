@@ -9,11 +9,11 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictation"
 CONFIG_FILE="$CONFIG_DIR/whisper-dictation.conf"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
-WHISPER_CPP_VERSION="v1.7.3"
+WHISPER_CPP_VERSION="v1.8.4"
 
 # Source existing config so WHISPER_MODEL and GNOME_KEYBINDING are available.
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
-WHISPER_MODEL="${WHISPER_MODEL:-medium.en}"
+WHISPER_MODEL="${WHISPER_MODEL:-medium}"
 GNOME_KEYBINDING="${GNOME_KEYBINDING:-F12}"
 
 # ── Stop any running instance ──────────────────────────────────────────────────
@@ -126,15 +126,23 @@ fi
 echo "==> Building whisper.cpp..."
 mkdir -p "$INSTALL_DIR"
 
+if [ -d "$INSTALL_DIR/whisper.cpp/.git" ]; then
+    _current_tag=$(git -C "$INSTALL_DIR/whisper.cpp" describe --tags --exact-match 2>/dev/null || echo "unknown")
+    if [ "$_current_tag" != "$WHISPER_CPP_VERSION" ]; then
+        echo "    Upgrading whisper.cpp from $_current_tag to $WHISPER_CPP_VERSION..."
+        rm -rf "$INSTALL_DIR/whisper.cpp" "$INSTALL_DIR/build"
+    else
+        echo "    whisper.cpp $WHISPER_CPP_VERSION already present, skipping clone."
+    fi
+fi
+
 if [ ! -d "$INSTALL_DIR/whisper.cpp/.git" ]; then
     echo "    Cloning whisper.cpp $WHISPER_CPP_VERSION..."
     git clone --depth 1 --branch "$WHISPER_CPP_VERSION" \
         https://github.com/ggerganov/whisper.cpp.git "$INSTALL_DIR/whisper.cpp"
-else
-    echo "    whisper.cpp source already present, skipping clone."
 fi
 
-if [ ! -f "$INSTALL_DIR/build/bin/stream" ]; then
+if [ ! -f "$INSTALL_DIR/build/bin/whisper-stream" ]; then
     # Clean up any partial build from a previous failed attempt
     rm -rf "$INSTALL_DIR/build"
     echo "    Configuring and building (this may take a few minutes)..."
@@ -143,9 +151,9 @@ if [ ! -f "$INSTALL_DIR/build/bin/stream" ]; then
         -DCMAKE_BUILD_TYPE=Release \
         -DWHISPER_SDL2=ON \
         "${_cmake_gpu_flags[@]}"
-    cmake --build "$INSTALL_DIR/build" --config Release -j"$(nproc)" --target stream
+    cmake --build "$INSTALL_DIR/build" --config Release --parallel "$(nproc)" --target whisper-stream
 else
-    echo "    stream binary already built, skipping build."
+    echo "    whisper-stream binary already built, skipping build."
 fi
 
 # ── Download GGML model ───────────────────────────────────────────────────────
@@ -157,7 +165,20 @@ MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FIL
 if [ ! -f "$INSTALL_DIR/models/$MODEL_FILE" ]; then
     mkdir -p "$INSTALL_DIR/models"
     echo "    Downloading $MODEL_FILE..."
-    curl -L -o "$INSTALL_DIR/models/$MODEL_FILE" "$MODEL_URL"
+    if ! curl -L --fail -o "$INSTALL_DIR/models/$MODEL_FILE" "$MODEL_URL"; then
+        rm -f "$INSTALL_DIR/models/$MODEL_FILE"
+        echo "ERROR: Failed to download $MODEL_FILE from $MODEL_URL"
+        echo "Available models: tiny.en base.en small.en medium.en"
+        echo "                  tiny base small medium large-v3"
+        echo "                  large-v3-turbo large-v3-turbo-q5_0 large-v3-turbo-q8_0"
+        exit 1
+    fi
+    _size=$(stat -c%s "$INSTALL_DIR/models/$MODEL_FILE" 2>/dev/null || echo 0)
+    if [ "$_size" -lt 10000000 ]; then
+        rm -f "$INSTALL_DIR/models/$MODEL_FILE"
+        echo "ERROR: Downloaded model is too small ($_size bytes) — likely truncated."
+        exit 1
+    fi
 else
     echo "    Model already downloaded, skipping."
 fi

@@ -9,6 +9,7 @@
 # Whisper model to use. See README.md for the speed/accuracy trade-off table.
 # English-only (faster):   tiny.en  base.en  small.en  medium.en
 # Multilingual (fr, de…):  tiny     base     small     medium    large-v3
+# Fast + accurate (GPU):   large-v3-turbo  large-v3-turbo-q5_0  large-v3-turbo-q8_0
 # NOTE: A multilingual model (no .en suffix) is required for non-English languages.
 WHISPER_MODEL="medium"
 
@@ -25,7 +26,8 @@ GNOME_KEYBINDING="F12"
 # ── Whisper-stream ────────────────────────────────────────────────────────────
 
 # Number of threads for whisper.cpp inference.
-THREADS=8
+# Default: half of available CPU cores (auto-detected). Override only if needed.
+#THREADS=8
 
 # Audio buffer length in ms (how much audio whisper-stream holds).
 STREAM_LENGTH=10000

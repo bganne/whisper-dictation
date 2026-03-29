@@ -92,16 +92,22 @@ The daemon runs until killed or the machine reboots.
 
 ## Model Selection
 
-| Model | GGML Size | English WER | Relative speed |
-|-------|-----------|-------------|----------------|
-| `tiny.en` | ~75 MB | high | fastest |
-| `base.en` | ~145 MB | good | fast |
-| `small.en` | ~465 MB | better | moderate |
-| `medium.en` | ~1.5 GB | best (English-only) | slow |
-| `large-v3` | ~3 GB | best (multilingual) | slowest |
+| Model | GGML Size | Quality | Speed | Notes |
+|-------|-----------|---------|-------|-------|
+| `tiny.en` | ~75 MB | fair | fastest | English only |
+| `base.en` | ~145 MB | good | fast | English only |
+| `small.en` | ~465 MB | better | moderate | English only |
+| `medium.en` | ~1.5 GB | best (EN-only) | slow | English only |
+| `large-v3-turbo-q5_0` | ~575 MB | excellent | fast | **Recommended for GPU users** |
+| `large-v3-turbo-q8_0` | ~875 MB | excellent | fast | Quantized, near-lossless |
+| `large-v3-turbo` | ~1.6 GB | excellent | fast | Full precision turbo |
+| `large-v3` | ~3 GB | best | slowest | Multilingual reference |
 
-For multilingual dictation use `large-v3` and set `WHISPER_LANGUAGES="en fr"` (or your codes).
-Use a multilingual model (no `.en` suffix) when cycling non-English languages.
+**Recommendation**: `large-v3-turbo-q5_0` gives near-`large-v3` quality at `small`-model speed on a GPU.
+
+For multilingual dictation use a multilingual model (no `.en` suffix) and set
+`WHISPER_LANGUAGES="en fr"` (or your language codes).
+The `large-v3-turbo` variants are multilingual.
 
 Change the model in your config file and re-run `./install.sh` to download the
 new GGML model file.

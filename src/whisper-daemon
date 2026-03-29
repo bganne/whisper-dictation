@@ -17,9 +17,11 @@ CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictation/whisper-dictati
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/whisper-dictation"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
-WHISPER_MODEL="${WHISPER_MODEL:-medium.en}"
+WHISPER_MODEL="${WHISPER_MODEL:-large-v3-turbo-q5_0}"
 WHISPER_LANGUAGES="${WHISPER_LANGUAGES:-en}"
-THREADS="${THREADS:-8}"
+_default_threads=$(( $(nproc) / 2 ))
+[ "$_default_threads" -lt 2 ] && _default_threads=2
+THREADS="${THREADS:-$_default_threads}"
 STREAM_LENGTH="${STREAM_LENGTH:-10000}"
 VAD_THRESHOLD="${VAD_THRESHOLD:-0.6}"
 FREQ_THRESHOLD="${FREQ_THRESHOLD:-100.0}"
@@ -37,7 +39,7 @@ OSD_OFFSET="${OSD_OFFSET:-20}"
 SOCKET="$RUNTIME_DIR/whisper-dictation-$(id -u).sock"
 FIFO="$RUNTIME_DIR/whisper-dictation-$(id -u).fifo"
 MODEL_PATH="$INSTALL_DIR/models/ggml-${WHISPER_MODEL}.bin"
-STREAM_BIN="$INSTALL_DIR/build/bin/stream"
+STREAM_BIN="$INSTALL_DIR/build/bin/whisper-stream"
 
 # ── State ──────────────────────────────────────────────────────────────────────
 
@@ -78,18 +80,53 @@ osd() {
 
 # ── Parse stream output and type ───────────────────────────────────────
 
-# Known whisper hallucinations on silence/noise — block these exactly
+# Known whisper hallucinations on silence/noise — block exact and pattern matches
 _is_hallucination() {
     local t="${1,,}"
-    t="${t%.}"   # strip trailing period for normalisation
+    t="${t%[.!?]}"    # strip trailing punctuation
+    t="${t#"${t%%[![:space:]]*}"}"   # trim leading whitespace
+    t="${t%"${t##*[![:space:]]}"}"   # trim trailing whitespace
+    [[ -z "$t" || "$t" == "you" ]] && return 0
     case "$t" in
-        "thank you"|"thanks for watching"|"thanks for watching!"|"you"|"bye"|\
-        "bye!"|"goodbye"|"please subscribe"|"subscribe"|"like and subscribe"|\
-        "see you next time"|"see you in the next video"|"subtitles by"|\
-        "subtitled by"|"transcribed by"|"captions by"|"ご視聴ありがとうございました"|\
-        "") return 0 ;;
+        "bye"|"bye!"|"goodbye"|"good bye") return 0 ;;
+        "subscribe"|"please subscribe"|"like and subscribe") return 0 ;;
+        "ご視聴ありがとうございました") return 0 ;;
     esac
+    [[ "$t" =~ ^thank(s|\ you)(\ (for|very).*)? ]] && return 0
+    [[ "$t" =~ ^see\ you(\ (next\ time|in\ the\ next(\ video)?))?$ ]] && return 0
+    [[ "$t" =~ ^(subtitl(ed|es)|transcribed|captions)\ by ]] && return 0
     return 1
+}
+
+# Remove intra-block phrase repetitions produced by whisper re-stating a partial phrase.
+# Example: "do you see better Do you see better models" → "do you see better models"
+# Accepts word array as positional args; echoes deduplicated words on stdout.
+_dedup_intra() {
+    local -a words=("$@")
+    local n=${#words[@]}
+    [ "$n" -lt 6 ] && { echo "${words[*]}"; return; }
+    local max_k i j k m w1 w2 match
+    for (( i = 0; i <= n - 6; i++ )); do
+        max_k=$(( n - i < 10 ? n - i : 10 ))
+        for (( k = max_k; k >= 3; k-- )); do
+            for (( j = i + k; j + k <= n; j++ )); do
+                match=true
+                for (( m = 0; m < k; m++ )); do
+                    w1="${words[i+m],,}"; w1="${w1//[^a-z0-9]/}"
+                    w2="${words[j+m],,}"; w2="${w2//[^a-z0-9]/}"
+                    [[ "$w1" == "$w2" ]] || { match=false; break; }
+                done
+                if $match; then
+                    local -a result=()
+                    [ "$i" -gt 0 ] && result+=("${words[@]:0:$i}")
+                    result+=("${words[@]:$j}")
+                    echo "${result[*]}"
+                    return
+                fi
+            done
+        done
+    done
+    echo "${words[*]}"
 }
 
 parse_and_type() {
@@ -114,6 +151,10 @@ parse_and_type() {
                     # and "rendez vous" produce the same tokens for dedup matching.
                     read -ra new_words <<< "${text//-/ }"
 
+                    # Remove intra-block repetitions (whisper re-stating a partial phrase)
+                    read -ra new_words < <(_dedup_intra "${new_words[@]}")
+                    text="${new_words[*]}"
+
                     # Skip single-word blocks (almost always noise artifacts)
                     [ ${#new_words[@]} -lt 2 ] && { text=""; continue; }
 
@@ -122,7 +163,7 @@ parse_and_type() {
 
                     if [ ${#typed_history[@]} -eq 0 ]; then
                         # First block: type everything
-                        xdotool type --clearmodifiers --delay 0 -- "$text"
+                        xdotool type --clearmodifiers --delay 0 -- "${new_words[*]}"
                         typed_history=("${new_words[@]}")
                     else
                         # Find longest overlap: suffix of history matching prefix of new block
@@ -159,7 +200,7 @@ parse_and_type() {
                             # else: entire block already typed, skip
                         else
                             # No significant overlap — new sentence or after silence
-                            xdotool type --clearmodifiers --delay 0 -- " ${text}"
+                            xdotool type --clearmodifiers --delay 0 -- " ${new_words[*]}"
                             typed_history+=("${new_words[@]}")
                         fi
 
@@ -189,6 +230,14 @@ parse_and_type() {
 
 do_start() {
     [ -n "$STREAM_PID" ] && return
+
+    # Validate model file exists before launching
+    if [ ! -f "$MODEL_PATH" ] || [ ! -s "$MODEL_PATH" ]; then
+        osd "ERROR: model not found" false
+        echo "ERROR: Model file not found or empty: $MODEL_PATH" >&2
+        echo "Run ./install.sh to download the model." >&2
+        return 1
+    fi
 
     rm -f "$FIFO"
     mkfifo "$FIFO"
@@ -315,7 +364,7 @@ echo "whisper-daemon starting, model=$WHISPER_MODEL languages=$WHISPER_LANGUAGES
 
 # ── Socket server ──────────────────────────────────────────────────────────────
 
-rm -f "$SOCKET"
+rm -f "$SOCKET" "$FIFO"
 
 # Start recording immediately — daemon is launched on first keypress
 LANG_INDEX=0
@@ -323,7 +372,7 @@ ACTIVE_LANGUAGE="${LANG_LIST[0]}"
 do_start
 
 while true; do
-    cmd=$(socat -T5 UNIX-LISTEN:"$SOCKET",mode=0600 STDOUT 2>/dev/null) || continue
+    cmd=$(socat -T5 UNIX-LISTEN:"$SOCKET",mode=0600 STDOUT 2>/dev/null) || true
     # Strip trailing newline, then trim leading/trailing whitespace
     cmd="${cmd%%$'\n'*}"
     cmd="${cmd#"${cmd%%[![:space:]]*}"}"
@@ -334,4 +383,20 @@ while true; do
         cycle)     do_cycle ;;
         "lang "*)  do_lang "${cmd#lang }" ;;
     esac
+
+    # Watchdog: if stream died unexpectedly while recording, restart it
+    if [ -n "$STREAM_PID" ] && ! kill -0 "$STREAM_PID" 2>/dev/null; then
+        echo "whisper-stream exited unexpectedly (exit $?), restarting..." >&2
+        osd "stream crashed, restarting..." false
+        wait "$STREAM_PID" 2>/dev/null || true
+        STREAM_PID=""
+        if [ -n "$READER_PID" ]; then
+            sleep 0.2
+            kill "$READER_PID" 2>/dev/null && wait "$READER_PID" 2>/dev/null || true
+            READER_PID=""
+        fi
+        rm -f "$FIFO"
+        sleep 1
+        do_start
+    fi
 done
