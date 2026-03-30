@@ -209,13 +209,11 @@ parse_and_type() {
         fi
 
         if $in_block; then
-            # Strip bracketed tokens (timestamps, [BLANK_AUDIO], (Silence), …) and control characters
-            line=$(sed -E 's/\[[^]]*\]|\([^)]*\)|\*[^*]*\*//g; s/[\[\]()]//g; s/^[[:space:]]*//; s/[[:cntrl:]]//g' <<< "$line")
             [ -n "$line" ] || continue
             [ -n "$text" ] && text="$text "
             text="${text}${line}"
         fi
-    done < "$FIFO"
+    done < <(stdbuf -oL sed -E 's/\[[^]]*\]|\([^)]*\)|\*[^*]*\*//g; s/[\[\]()]//g; s/^[[:space:]]*//; s/[[:cntrl:]]//g' "$FIFO")
 }
 
 # ── Recording control ──────────────────────────────────────────────────────────
