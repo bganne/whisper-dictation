@@ -12,6 +12,7 @@ RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 WHISPER_CPP_VERSION="v1.8.4"
 
 # Source existing config so WHISPER_MODEL and GNOME_KEYBINDING are available.
+# shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 WHISPER_MODEL="${WHISPER_MODEL:-medium}"
 GNOME_KEYBINDING="${GNOME_KEYBINDING:-F12}"
@@ -222,7 +223,7 @@ else
         if [ "$EXISTING" = "@as []" ] || [ "$EXISTING" = "[]" ]; then
             NEW="['$BINDING_PATH']"
         else
-            NEW=$(echo "$EXISTING" | sed "s|]|, '$BINDING_PATH']|")
+            NEW="${EXISTING%]}, '$BINDING_PATH']"
         fi
         gsettings set "$SCHEMA" custom-keybindings "$NEW"
     fi

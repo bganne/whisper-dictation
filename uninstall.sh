@@ -39,6 +39,7 @@ echo "==> Removing GNOME keybinding..."
 EXISTING=$(gsettings get "$SCHEMA" custom-keybindings 2>/dev/null || echo "@as []")
 if echo "$EXISTING" | grep -q "custom-whisper-dictation"; then
     NEW=$(echo "$EXISTING" | sed "s|, '$BINDING_PATH'||g; s|'$BINDING_PATH', ||g; s|'$BINDING_PATH'||g")
+    # shellcheck disable=SC2001
     NEW=$(echo "$NEW" | sed "s|\[\s*\]|[]|g")
     gsettings set "$SCHEMA" custom-keybindings "$NEW"
     gsettings reset "${SCHEMA}.custom-keybinding:${BINDING_PATH}" name    2>/dev/null || true

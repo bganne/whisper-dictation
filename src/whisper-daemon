@@ -4,6 +4,7 @@ set -euo pipefail
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictation/whisper-dictation.conf"
+# shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/whisper-dictation"
@@ -53,7 +54,10 @@ osd() {
     local msg="${1:-}"
     local persistent="${2:-false}"
 
-    [ -n "$OSD_PID" ] && kill "$OSD_PID" 2>/dev/null && wait "$OSD_PID" 2>/dev/null || true
+    if [ -n "$OSD_PID" ]; then
+        kill "$OSD_PID" 2>/dev/null || true
+        wait "$OSD_PID" 2>/dev/null || true
+    fi
     OSD_PID=""
 
     [ -z "$msg" ] && return
@@ -238,7 +242,8 @@ do_start() {
     local -a extra_args=()
     [ -n "$EXTRA_STREAM_ARGS" ] && read -ra extra_args <<< "$EXTRA_STREAM_ARGS"
 
-    local stderr_log="$RUNTIME_DIR/whisper-dictation-$(id -u).stderr"
+    local stderr_log
+    stderr_log="$RUNTIME_DIR/whisper-dictation-$(id -u).stderr"
     local lang_label="${ACTIVE_LANGUAGE^^}"
 
     # Show loading OSD — use cached backend or fixed-width placeholder
@@ -263,17 +268,19 @@ do_start() {
     # Detect backend once, then cache it for future loading screens
     if [ -z "$BACKEND" ]; then
         local backend="unknown"
-        for _ in $(seq 100); do
+        for (( _i = 0; _i < 100; _i++ )); do
             kill -0 "$STREAM_PID" 2>/dev/null || break
-            if grep -qi "vulkan" "$stderr_log" 2>/dev/null; then
+            local _log
+            _log=$(< "$stderr_log") 2>/dev/null || true
+            if [[ "${_log,,}" == *"vulkan"* ]]; then
                 backend="Vulkan"; break
-            elif grep -qi "cpu" "$stderr_log" 2>/dev/null; then
+            elif [[ "${_log,,}" == *"cpu"* ]]; then
                 backend="CPU"; break
             fi
             sleep 0.1
         done
         # Pad to width of longest backend ("unknown" = 7) so brackets stay fixed
-        BACKEND=$(printf '%-7s' "$backend")
+        printf -v BACKEND '%-7s' "$backend"
         osd "loading [$lang_label] [$BACKEND]" true
         sleep 1
     fi
@@ -284,7 +291,7 @@ do_start() {
 do_stop() {
     [ -z "$STREAM_PID" ] && return
 
-    kill "$STREAM_PID" 2>/dev/null && wait "$STREAM_PID" 2>/dev/null || true
+    { kill "$STREAM_PID" 2>/dev/null; wait "$STREAM_PID" 2>/dev/null; } || true
     STREAM_PID=""
 
     # Reader exits naturally when the FIFO write-end closes (stream EOF).
@@ -294,7 +301,7 @@ do_stop() {
         kill -0 "$READER_PID" 2>/dev/null || break
         sleep 0.1
     done
-    kill "$READER_PID" 2>/dev/null && wait "$READER_PID" 2>/dev/null || true
+    { kill "$READER_PID" 2>/dev/null; wait "$READER_PID" 2>/dev/null; } || true
     READER_PID=""
 
     rm -f "$FIFO"
@@ -380,7 +387,7 @@ while true; do
         STREAM_PID=""
         if [ -n "$READER_PID" ]; then
             sleep 0.2
-            kill "$READER_PID" 2>/dev/null && wait "$READER_PID" 2>/dev/null || true
+            { kill "$READER_PID" 2>/dev/null; wait "$READER_PID" 2>/dev/null; } || true
             READER_PID=""
         fi
         rm -f "$FIFO"
