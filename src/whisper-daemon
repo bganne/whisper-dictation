@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── oneAPI runtime (SYCL builds need this) ─────────────────────────────────────
-
-if [ -f /opt/intel/oneapi/setvars.sh ]; then
-    set +euo pipefail
-    source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1
-    set -euo pipefail
-fi
-
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictation/whisper-dictation.conf"
@@ -275,9 +267,7 @@ do_start() {
         local backend="unknown"
         for _ in $(seq 100); do
             kill -0 "$STREAM_PID" 2>/dev/null || break
-            if grep -qi "sycl" "$stderr_log" 2>/dev/null; then
-                backend="SYCL"; break
-            elif grep -qi "vulkan" "$stderr_log" 2>/dev/null; then
+            if grep -qi "vulkan" "$stderr_log" 2>/dev/null; then
                 backend="Vulkan"; break
             elif grep -qi "cpu" "$stderr_log" 2>/dev/null; then
                 backend="CPU"; break

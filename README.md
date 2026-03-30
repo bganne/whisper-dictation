@@ -2,7 +2,7 @@
 
 Press a key, speak, pause — your words appear at the cursor. Powered by
 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with automatic Intel
-iGPU acceleration via SYCL or Vulkan.
+iGPU acceleration via Vulkan.
 
 A persistent daemon keeps the model loaded in memory so every toggle after the
 first is instant, with no per-use startup cost.
@@ -116,11 +116,10 @@ new GGML model file.
 
 ## GPU Acceleration
 
-`install.sh` automatically detects Intel iGPUs and installs GPU acceleration:
+`install.sh` automatically detects Intel and AMD iGPUs and installs GPU acceleration:
 
-1. **SYCL** (preferred) — Intel oneAPI DPC++ compiler, best performance on Intel Arc
-2. **Vulkan** (fallback) — cross-vendor, good performance
-3. **CPU** — no GPU deps needed
+1. **Vulkan** — cross-vendor, works on Intel, AMD, and NVIDIA
+2. **CPU** — no GPU deps needed
 
 See [docs/gpu.md](docs/gpu.md) for details, manual setup, and how to force a
 specific backend.

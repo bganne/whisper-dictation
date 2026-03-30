@@ -47,61 +47,19 @@ elif [ "$WHISPER_GPU" = "vulkan" ]; then
     echo "==> WHISPER_GPU=vulkan, forcing Vulkan backend..."
     sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools glslc
     GPU_CMAKE_FLAGS="-DGGML_VULKAN=ON"
-elif [ "$WHISPER_GPU" = "sycl" ]; then
-    echo "==> WHISPER_GPU=sycl, forcing SYCL backend..."
-    if [ ! -f /etc/apt/sources.list.d/intel-oneapi.list ]; then
-        wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-            | sudo gpg --dearmor -o /usr/share/keyrings/intel-oneapi-archive-keyring.gpg
-        echo "deb [signed-by=/usr/share/keyrings/intel-oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
-            | sudo tee /etc/apt/sources.list.d/intel-oneapi.list >/dev/null
-        sudo apt-get update
-    fi
-    sudo apt-get install -y intel-oneapi-dpcpp-cpp-compiler intel-oneapi-mkl-devel \
-        libze-intel-gpu1 libze1
-    if [ -f /opt/intel/oneapi/setvars.sh ]; then
-        set +euo pipefail
-        source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1
-        set -euo pipefail
-    fi
-    GPU_CMAKE_FLAGS="-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
 else
     # auto: detect GPU hardware
     _has_intel=$(lspci | grep -i vga | grep -ci intel || true)
     _has_amd=$(lspci | grep -i vga | grep -ci "amd\|ati" || true)
 
     if [ "$_has_intel" -gt 0 ]; then
-        echo "==> Intel iGPU detected, setting up GPU acceleration..."
-
-        # Try SYCL first (Intel oneAPI)
-        echo "    Setting up SYCL (Intel oneAPI)..."
-        if [ ! -f /etc/apt/sources.list.d/intel-oneapi.list ]; then
-            wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-                | sudo gpg --dearmor -o /usr/share/keyrings/intel-oneapi-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/intel-oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
-                | sudo tee /etc/apt/sources.list.d/intel-oneapi.list >/dev/null
-            sudo apt-get update
-        fi
-        sudo apt-get install -y intel-oneapi-dpcpp-cpp-compiler intel-oneapi-mkl-devel \
-            libze-intel-gpu1 libze1
-        if [ -f /opt/intel/oneapi/setvars.sh ]; then
-            set +euo pipefail
-            source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1
-            set -euo pipefail
-        fi
-        if icpx --version &>/dev/null; then
-            GPU_CMAKE_FLAGS="-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
-        fi
-
-        # Fall back to Vulkan if SYCL didn't work
-        if [ -z "$GPU_CMAKE_FLAGS" ]; then
-            echo "    SYCL unavailable, trying Vulkan..."
-            sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools glslc
-            if vulkaninfo --summary &>/dev/null; then
-                echo "    Vulkan available."
-                GPU_CMAKE_FLAGS="-DGGML_VULKAN=ON"
-            else
-                echo "    WARNING: No GPU acceleration available, using CPU."
-            fi
+        echo "==> Intel iGPU detected, setting up Vulkan acceleration..."
+        sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools glslc
+        if vulkaninfo --summary &>/dev/null; then
+            echo "    Vulkan available."
+            GPU_CMAKE_FLAGS="-DGGML_VULKAN=ON"
+        else
+            echo "    WARNING: No GPU acceleration available, using CPU."
         fi
     elif [ "$_has_amd" -gt 0 ]; then
         echo "==> AMD GPU detected, setting up Vulkan acceleration..."

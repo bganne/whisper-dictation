@@ -1,55 +1,25 @@
 # GPU Acceleration
 
-Whisper dictation can run whisper.cpp on an Intel integrated GPU for faster
-transcription. `install.sh` automatically detects your hardware and picks the
-best backend.
+Whisper dictation can run whisper.cpp on a GPU for faster transcription.
+`install.sh` automatically detects your hardware and picks the best backend.
 
 ---
 
 ## Backends (in priority order)
 
-### 1. SYCL (Intel oneAPI)
-
-Best performance on Intel Arc iGPUs (Meteor Lake, Arrow Lake, etc.).
-
-`install.sh` automatically:
-- Adds the Intel oneAPI apt repository
-- Installs `intel-oneapi-dpcpp-cpp-compiler` and `intel-oneapi-mkl-devel`
-- Builds whisper.cpp with `-DGGML_SYCL=ON`
-
-> **AMD GPUs**: SYCL is Intel-only. `install.sh` skips to Vulkan automatically.
-
-**Manual setup** (if auto-detection fails):
-```bash
-# Add Intel oneAPI repo
-wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-    | sudo gpg --dearmor -o /usr/share/keyrings/intel-oneapi-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/intel-oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
-    | sudo tee /etc/apt/sources.list.d/intel-oneapi.list
-sudo apt-get update
-sudo apt-get install -y intel-oneapi-dpcpp-cpp-compiler intel-oneapi-mkl-devel
-
-# Verify
-icpx --version
-
-# Rebuild
-rm -rf ~/.local/share/whisper-dictation/build
-./install.sh
-```
-
-### 2. Vulkan
+### 1. Vulkan
 
 Cross-vendor GPU support. Works on Intel, AMD, and NVIDIA GPUs.
 
 `install.sh` installs Vulkan deps and builds with `-DGGML_VULKAN=ON`:
-- **AMD**: detected automatically, goes directly to Vulkan (no SYCL step)
-- **Intel**: used as fallback if SYCL is unavailable
+- **Intel**: detected automatically
+- **AMD**: detected automatically
 
 **Manual setup**:
 ```bash
-sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools
+sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools glslc
 
-# Verify Intel GPU is visible
+# Verify GPU is visible
 vulkaninfo --summary
 
 # Rebuild
@@ -57,7 +27,7 @@ rm -rf ~/.local/share/whisper-dictation/build
 ./install.sh
 ```
 
-### 3. CPU (fallback)
+### 2. CPU (fallback)
 
 If no GPU backend is detected, whisper.cpp builds for CPU only. This still
 benefits from compiler optimizations (AVX2, etc.) and is reasonable for smaller
@@ -72,17 +42,14 @@ Delete the build directory and set `WHISPER_GPU` before running `install.sh`:
 ```bash
 rm -rf ~/.local/share/whisper-dictation/build
 
-# Force Vulkan even if SYCL is available
+# Force Vulkan
 WHISPER_GPU=vulkan ./install.sh
 
 # Force CPU only (no GPU deps installed or detected)
 WHISPER_GPU=cpu ./install.sh
-
-# Force SYCL (Intel oneAPI)
-WHISPER_GPU=sycl ./install.sh
 ```
 
-`WHISPER_GPU` accepts: `auto` (default), `cpu`, `vulkan`, `sycl`.
+`WHISPER_GPU` accepts: `auto` (default), `cpu`, `vulkan`.
 
 ---
 
@@ -108,8 +75,4 @@ Look for lines indicating the compute device. You can also test directly:
 
 - Intel and AMD GPUs are auto-detected by `install.sh`. NVIDIA users should
   build whisper.cpp with `-DGGML_CUDA=ON` manually.
-- SYCL requires the Intel GPU kernel driver (i915 or xe). Verify with
-  `ls /dev/dri/render*`.
-- The first inference after loading may be slightly slower due to JIT
-  compilation warm-up.
 - `large-v3` on GPU requires ~3 GB of VRAM.
