@@ -79,9 +79,9 @@ if [ -n "$GPU_CMAKE_FLAGS" ]; then
     echo "    GPU build flags: $GPU_CMAKE_FLAGS"
 fi
 
-# ── Build whisper.cpp ──────────────────────────────────────────────────────────
+# ── Clone whisper.cpp ─────────────────────────────────────────────────────────
 
-echo "==> Building whisper.cpp..."
+echo "==> Fetching whisper.cpp..."
 mkdir -p "$INSTALL_DIR"
 
 if [ -d "$INSTALL_DIR/whisper.cpp/.git" ]; then
@@ -100,6 +100,26 @@ if [ ! -d "$INSTALL_DIR/whisper.cpp/.git" ]; then
         https://github.com/ggerganov/whisper.cpp.git "$INSTALL_DIR/whisper.cpp"
 fi
 
+# ── Download GGML model (start in background, parallel with build) ────────────
+
+echo "==> Downloading GGML model..."
+MODEL_FILE="ggml-${WHISPER_MODEL}.bin"
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILE}"
+DOWNLOAD_PID=""
+_dl_log="$RUNTIME_DIR/whisper-dictation-install-dl.log"
+
+if [ ! -f "$INSTALL_DIR/models/$MODEL_FILE" ]; then
+    mkdir -p "$INSTALL_DIR/models"
+    curl -L --fail --progress-bar \
+        -o "$INSTALL_DIR/models/$MODEL_FILE" "$MODEL_URL" \
+        2>"$_dl_log" &
+    DOWNLOAD_PID=$!
+else
+    echo "    Model already downloaded, skipping."
+fi
+
+# ── Build whisper.cpp ─────────────────────────────────────────────────────────
+
 if [ ! -f "$INSTALL_DIR/build/bin/whisper-stream" ]; then
     # Clean up any partial build from a previous failed attempt
     rm -rf "$INSTALL_DIR/build"
@@ -114,16 +134,14 @@ else
     echo "    whisper-stream binary already built, skipping build."
 fi
 
-# ── Download GGML model ───────────────────────────────────────────────────────
+# ── Wait for model download ────────────────────────────────────────────────────
 
-echo "==> Downloading GGML model..."
-MODEL_FILE="ggml-${WHISPER_MODEL}.bin"
-MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILE}"
-
-if [ ! -f "$INSTALL_DIR/models/$MODEL_FILE" ]; then
-    mkdir -p "$INSTALL_DIR/models"
-    echo "    Downloading $MODEL_FILE..."
-    if ! curl -L --fail -o "$INSTALL_DIR/models/$MODEL_FILE" "$MODEL_URL"; then
+if [ -n "$DOWNLOAD_PID" ]; then
+    if kill -0 "$DOWNLOAD_PID" 2>/dev/null; then
+        echo "==> Waiting for model download..."
+        tail -f --pid="$DOWNLOAD_PID" "$_dl_log" 2>/dev/null || true
+    fi
+    if ! wait "$DOWNLOAD_PID"; then
         rm -f "$INSTALL_DIR/models/$MODEL_FILE"
         echo "ERROR: Failed to download $MODEL_FILE from $MODEL_URL"
         echo "Available models: tiny.en base.en small.en medium.en"
@@ -137,8 +155,7 @@ if [ ! -f "$INSTALL_DIR/models/$MODEL_FILE" ]; then
         echo "ERROR: Downloaded model is too small ($_size bytes) — likely truncated."
         exit 1
     fi
-else
-    echo "    Model already downloaded, skipping."
+    rm -f "$_dl_log"
 fi
 
 # ── Config ─────────────────────────────────────────────────────────────────────

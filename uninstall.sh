@@ -57,13 +57,17 @@ rm -f "$BIN_DIR/whisper-dictation-toggle"
 # ── Remove installation directory ──────────────────────────────────────────────
 
 echo "==> Removing installation directory..."
-rm -rf "$INSTALL_DIR"
+# Remove everything except models/, which are large and reusable
+find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -not -name models -exec rm -rf {} +
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# ── Config and models ──────────────────────────────────────────────────────────
 
 if $PURGE; then
     echo "==> Removing config directory (--purge)..."
     rm -rf "$CONFIG_DIR"
+    echo "==> Removing models (--purge)..."
+    rm -rf "$INSTALL_DIR/models"
+    rmdir "$INSTALL_DIR" 2>/dev/null || true
 fi
 
 # ── Done ───────────────────────────────────────────────────────────────────────
@@ -74,5 +78,6 @@ echo ""
 if ! $PURGE; then
     echo "The following were preserved:"
     echo "  Config : $CONFIG_DIR"
+    echo "  Models : $INSTALL_DIR/models"
     echo "           (remove manually, or re-run with --purge)"
 fi
