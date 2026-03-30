@@ -217,7 +217,7 @@ parse_and_type() {
             [ -n "$text" ] && text="$text "
             text="${text}${line}"
         fi
-    done < <(stdbuf -oL sed -E 's/\[[^]]*\]|\([^)]*\)|\*[^*]*\*//g; s/[\[\]()]//g; s/^[[:space:]]*//; s/[[:cntrl:]]//g' "$FIFO")
+    done < <(stdbuf -oL sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/[[:cntrl:]]//g; s/\[[^]]*\]|\([^)]*\)|\*[^*]*\*//g; s/[\[\]()]//g; s/^[[:space:]]*//' "$FIFO")
 }
 
 # ── Recording control ──────────────────────────────────────────────────────────
